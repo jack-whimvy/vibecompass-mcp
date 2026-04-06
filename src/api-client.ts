@@ -164,7 +164,13 @@ export class VibeCompassClient {
         };
       }
 
-      return (await response.json()) as ApiResponse<T>;
+      const json = (await response.json()) as ApiResponse<T>;
+
+      // Successful writes change the source of truth, so stale read fallbacks
+      // should not survive into subsequent tool calls.
+      this.cache.clear();
+
+      return json;
     } catch (error) {
       clearTimeout(timer);
       this.logError(url, error);

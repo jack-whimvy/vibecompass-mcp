@@ -7,9 +7,15 @@
     "vibecompass-mcp": "./dist/index.js"
   },
   "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
+    "prepare": "npm run build",
     "start": "node dist/index.js"
   },
   "keywords": [
@@ -20,6 +26,14 @@
     "claude"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jack-whimvy/vibecompass-mcp.git"
+  },
+  "homepage": "https://vibecompass.dev",
+  "bugs": {
+    "url": "https://github.com/jack-whimvy/vibecompass-mcp/issues"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.28.0",
     "zod": "^3.23.0"
