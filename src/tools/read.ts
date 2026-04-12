@@ -23,9 +23,13 @@ export function registerReadTools(
     'get_feature_context',
     {
       description:
-        'Get FULL details for a specific feature before working on it. Returns description, components, involved files, recent decisions, and open conflicts for that feature. Always call this before modifying code that belongs to a feature.',
+        'Get FULL details for a specific feature before working on it. Returns description, components, involved files, repo ownership, recent decisions, and open conflicts for that feature. Always call this before modifying code that belongs to a feature.',
       inputSchema: {
-        feature_slug: z.string().describe('The slug of the feature to get context for'),
+        feature_slug: z
+          .string()
+          .describe(
+            'The slug of the feature to get context for. In repo-local multi-repo projects this may be repo-prefixed (for example "web--authentication"). Discover exact slugs via get_project_context() or get_file_context().',
+          ),
         component_slug: z
           .string()
           .optional()
@@ -57,7 +61,9 @@ export function registerReadTools(
         feature_slug: z
           .string()
           .optional()
-          .describe('Optional feature slug to filter decisions'),
+          .describe(
+            'Optional feature slug to filter decisions. In repo-local multi-repo projects this may be repo-prefixed (for example "web--authentication").',
+          ),
       },
     },
     async ({ limit, feature_slug }) => {
@@ -86,12 +92,12 @@ export function registerReadTools(
     'get_file_context',
     {
       description:
-        'Before modifying any file, call this to understand which feature and component owns it. This prevents accidental cross-feature changes and helps you stay within the right domain.',
+        'Before modifying any file, call this to understand which feature and component owns it. This prevents accidental cross-feature changes and helps you stay within the right domain. For multi-repo projects, pass file paths in repo:path form (for example "web:src/app/page.tsx").',
       inputSchema: {
         filepath: z
           .string()
           .describe(
-            'The file path relative to the repo root (e.g. src/lib/auth.ts)',
+            'The file path to inspect. Use repo:path for multi-repo projects (for example web:src/lib/auth.ts); single-repo projects can use repo-root-relative paths.',
           ),
       },
     },

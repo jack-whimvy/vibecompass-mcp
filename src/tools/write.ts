@@ -16,7 +16,9 @@ export function registerWriteTools(
         feature_slug: z
           .string()
           .min(1)
-          .describe('The slug of the feature this decision relates to'),
+          .describe(
+            'The slug of the feature this decision relates to. In repo-local multi-repo projects this may be repo-prefixed (for example "web--authentication").',
+          ),
         title: z
           .string()
           .min(1)
@@ -47,7 +49,12 @@ export function registerWriteTools(
       description:
         'Update a feature\'s status when you make progress. Mark "in_progress" when you start working on it, "complete" when done, "blocked" if stuck. This keeps the project brain accurate for the next session.',
       inputSchema: {
-        feature_slug: z.string().min(1).describe('The slug of the feature to update'),
+        feature_slug: z
+          .string()
+          .min(1)
+          .describe(
+            'The slug of the feature to update. In repo-local multi-repo projects this may be repo-prefixed (for example "web--authentication").',
+          ),
         status: z
           .enum(['draft', 'in_progress', 'complete', 'blocked', 'deprecated'])
           .describe('The new status'),
@@ -76,7 +83,9 @@ export function registerWriteTools(
         feature_slug: z
           .string()
           .min(1)
-          .describe('The slug of the feature where the conflict was found'),
+          .describe(
+            'The slug of the feature where the conflict was found. In repo-local multi-repo projects this may be repo-prefixed (for example "web--authentication").',
+          ),
         description: z
           .string()
           .min(1)
@@ -111,7 +120,9 @@ export function registerWriteTools(
         features_touched: z
           .array(z.string().min(1))
           .min(1)
-          .describe('Array of feature slugs that were worked on in this session'),
+          .describe(
+            'Array of feature slugs that were worked on in this session. In repo-local multi-repo projects these may be repo-prefixed (for example "web--authentication").',
+          ),
       },
     },
     async ({ summary, features_touched }) => {

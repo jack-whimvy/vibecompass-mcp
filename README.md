@@ -93,6 +93,7 @@ VibeCompass tools.
 ```bash
 npm install
 npm run build
+npm test
 VIBECOMPASS_API_KEY=your-api-key npm run start
 ```
 
