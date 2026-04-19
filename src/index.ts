@@ -3,6 +3,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { VibeCompassClient } from './api-client.js';
+import { HostedReadProvider } from './providers/hosted-read.js';
+import { LocalReadProvider } from './providers/local-read.js';
 import { registerReadTools } from './tools/read.js';
 import { registerWriteTools } from './tools/write.js';
 
@@ -11,27 +13,40 @@ const VERSION = '0.1.0';
 function main(): void {
   const apiKey = process.env.VIBECOMPASS_API_KEY;
   const apiUrl = process.env.VIBECOMPASS_API_URL;
+  const rootDir = process.env.VIBECOMPASS_ROOT;
 
-  if (!apiKey) {
+  if (!apiKey && !rootDir) {
     process.stderr.write(
-      'Error: VIBECOMPASS_API_KEY environment variable is required.\n' +
-        'Get your API key from the VibeCompass dashboard: Settings → API Keys\n',
+      'Error: set VIBECOMPASS_API_KEY for hosted mode or VIBECOMPASS_ROOT for local mode.\n',
     );
     process.exit(1);
   }
 
-  const client = new VibeCompassClient({
-    apiKey,
-    baseUrl: apiUrl,
-  });
+  const client = apiKey
+    ? new VibeCompassClient({
+        apiKey,
+        baseUrl: apiUrl,
+      })
+    : null;
 
   const server = new McpServer({
     name: 'vibecompass',
     version: VERSION,
   });
 
-  registerReadTools(server, client);
-  registerWriteTools(server, client);
+  const readProvider = rootDir
+    ? new LocalReadProvider(rootDir, client ?? undefined)
+    : new HostedReadProvider(client as VibeCompassClient);
+
+  registerReadTools(server, readProvider);
+
+  if (client) {
+    registerWriteTools(server, client);
+  } else {
+    process.stderr.write(
+      'Warning: write tools are disabled in local mode until local write flows are implemented.\n',
+    );
+  }
 
   const transport = new StdioServerTransport();
   server.connect(transport).catch((error) => {

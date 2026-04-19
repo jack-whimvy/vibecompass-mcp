@@ -9,18 +9,27 @@ decisions, conflicts, and session handoff notes.
 ## Requirements
 
 - Node.js 20+
-- A VibeCompass API key for the target project
+- One of:
+  - `VIBECOMPASS_API_KEY` for hosted mode
+  - `VIBECOMPASS_ROOT` for local read mode
+- For local mode today, the `vibecompass` core package must be importable or available as the sibling workspace checkout used in this repo
 
 ## Environment
 
-Required:
+Hosted mode:
 
 - `VIBECOMPASS_API_KEY`
-
-Optional:
-
 - `VIBECOMPASS_API_URL`
   Defaults to `https://vibecompass.dev`
+
+Local mode:
+
+- `VIBECOMPASS_ROOT`
+  Absolute path to the canonical local project-memory root (`project.yaml`, `architecture/`, `decisions/`, `sessions/`, `state/manifest.json`)
+
+Hybrid mode:
+
+- If both `VIBECOMPASS_ROOT` and `VIBECOMPASS_API_KEY` are set, read tools resolve from the local root, while write tools and hosted conflict reads remain enabled through the API client
 
 ## Install
 
@@ -44,6 +53,8 @@ npx -y vibecompass-mcp
 ```
 
 ## Example config
+
+### Hosted mode
 
 ### Claude Code (`.claude/settings.json`)
 
@@ -88,6 +99,28 @@ Use:
 Keep the repo-level `AGENTS.md` file committed so Codex knows when to call the
 VibeCompass tools.
 
+### Local read mode
+
+Example env:
+
+```json
+{
+  "VIBECOMPASS_ROOT": "/absolute/path/to/project-memory-root"
+}
+```
+
+### Hybrid mode
+
+Example env:
+
+```json
+{
+  "VIBECOMPASS_ROOT": "/absolute/path/to/project-memory-root",
+  "VIBECOMPASS_API_KEY": "your-api-key",
+  "VIBECOMPASS_API_URL": "https://vibecompass.dev"
+}
+```
+
 ## Local development
 
 ```bash
@@ -97,9 +130,15 @@ npm test
 VIBECOMPASS_API_KEY=your-api-key npm run start
 ```
 
+Local-only read development:
+
+```bash
+VIBECOMPASS_ROOT=/absolute/path/to/project-memory-root npm run start
+```
+
 ## Tools
 
-Read:
+Read tools work in hosted mode or local mode:
 
 - `get_project_context`
 - `get_feature_context`
@@ -107,7 +146,7 @@ Read:
 - `get_conflicts`
 - `get_file_context`
 
-Write:
+Write tools require `VIBECOMPASS_API_KEY` and are disabled in pure local mode:
 
 - `log_decision`
 - `update_feature_status`

@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { VibeCompassClient } from '../api-client.js';
 import { formatError, formatResponse } from '../format.js';
+import { LocalReadProvider } from '../providers/local-read.js';
+import type { ReadProvider } from '../read-provider.js';
 import { registerReadTools } from '../tools/read.js';
 import { registerWriteTools } from '../tools/write.js';
 
@@ -114,29 +119,49 @@ test('API client falls back to cache on read failure and clears cache after writ
 test('read and write tool registries expose the expected tool surface', async () => {
   const tools = new Map<string, RegisteredTool>();
   const server = createFakeServer(tools);
-  const calls: Array<{
-    method: 'get' | 'post' | 'patch';
+  const readCalls: Array<{ method: string; payload?: Record<string, unknown> }> = [];
+  const writeCalls: Array<{
+    method: 'post' | 'patch';
     path: string;
     payload?: Record<string, unknown>;
   }> = [];
 
-  const client = {
-    async get(path: string, payload?: Record<string, unknown>) {
-      calls.push({ method: 'get', path, payload });
+  const readProvider: ReadProvider = {
+    async getProjectContext() {
+      readCalls.push({ method: 'getProjectContext' });
       return { data: { ok: true }, _freshness: '2026-04-12T00:00:00.000Z' };
     },
+    async getFeatureContext(payload) {
+      readCalls.push({ method: 'getFeatureContext', payload });
+      return { data: { ok: true }, _freshness: '2026-04-12T00:00:00.000Z' };
+    },
+    async getDecisionLog(payload) {
+      readCalls.push({ method: 'getDecisionLog', payload });
+      return { data: { ok: true }, _freshness: '2026-04-12T00:00:00.000Z' };
+    },
+    async getConflicts() {
+      readCalls.push({ method: 'getConflicts' });
+      return { data: { ok: true }, _freshness: '2026-04-12T00:00:00.000Z' };
+    },
+    async getFileContext(payload) {
+      readCalls.push({ method: 'getFileContext', payload });
+      return { data: { ok: true }, _freshness: '2026-04-12T00:00:00.000Z' };
+    },
+  };
+
+  const writeClient = {
     async post(path: string, payload: Record<string, unknown>) {
-      calls.push({ method: 'post', path, payload });
+      writeCalls.push({ method: 'post', path, payload });
       return { data: { ok: true }, _freshness: '2026-04-12T00:00:00.000Z' };
     },
     async patch(path: string, payload: Record<string, unknown>) {
-      calls.push({ method: 'patch', path, payload });
+      writeCalls.push({ method: 'patch', path, payload });
       return { data: { ok: true }, _freshness: '2026-04-12T00:00:00.000Z' };
     },
   } as unknown as VibeCompassClient;
 
-  registerReadTools(server, client);
-  registerWriteTools(server, client);
+  registerReadTools(server, readProvider);
+  registerWriteTools(server, writeClient);
 
   assert.deepEqual(
     [...tools.keys()].sort(),
@@ -164,12 +189,14 @@ test('read and write tool registries expose the expected tool surface', async ()
     features_touched: ['auth'],
   });
 
-  assert.deepEqual(calls, [
+  assert.deepEqual(readCalls, [
     {
-      method: 'get',
-      path: '/api/mcp/files',
-      payload: { path: 'src/lib/auth.ts' },
+      method: 'getFileContext',
+      payload: { filepath: 'src/lib/auth.ts' },
     },
+  ]);
+
+  assert.deepEqual(writeCalls, [
     {
       method: 'patch',
       path: '/api/mcp/features/auth/status',
@@ -184,4 +211,230 @@ test('read and write tool registries expose the expected tool surface', async ()
       },
     },
   ]);
+});
+
+test('local read provider serves project and file context from the local root', async () => {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), 'vibecompass-mcp-local-'));
+
+  try {
+    await mkdir(path.join(rootDir, 'architecture/mcp-server/context-delivery'), {
+      recursive: true,
+    });
+    await mkdir(path.join(rootDir, 'decisions'), { recursive: true });
+    await mkdir(path.join(rootDir, 'sessions'), { recursive: true });
+    await mkdir(path.join(rootDir, 'state'), { recursive: true });
+
+    await writeFile(
+      path.join(rootDir, 'project.yaml'),
+      [
+        'format_version: 1',
+        'name: Local MCP',
+        'mode: local-only',
+        'repos:',
+        '  - id: mcp',
+        '    remote: https://github.com/example/vibecompass-mcp.git',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await writeFile(
+      path.join(rootDir, '.gitignore'),
+      'state/\n',
+      'utf8',
+    );
+    await writeFile(
+      path.join(rootDir, 'architecture/mcp-server/context-delivery/read-tools.md'),
+      [
+        '---',
+        'domain: MCP Server',
+        'feature: Context Delivery',
+        'component: Read Tools',
+        'status: Complete',
+        'repo: mcp',
+        '---',
+        '',
+        '## Description',
+        'Local read tools.',
+        '',
+        '## Details',
+        'Details.',
+        '',
+        '## Next steps',
+        '- None.',
+        '',
+        '## Involved files',
+        '- `src/tools/read.ts`',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await writeFile(
+      path.join(rootDir, 'decisions/cross-cutting.md'),
+      [
+        '### D-159 — Local file-backed query logic lives in vibecompass',
+        '**Timestamp:** 2026-04-19 13:10 PDT',
+        '**Decision:** Keep local reads in the core package.',
+        '**Rationale:** MCP is an adapter.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await writeFile(
+      path.join(rootDir, 'sessions/2026-04-19-1-local-mcp.md'),
+      [
+        '# Session — 2026-04-19-1 — Local MCP',
+        '',
+        '## What we worked on',
+        'Local reads.',
+        '',
+        '## Completed',
+        '- Added local reads.',
+        '',
+        '## Decisions made',
+        '- D-159',
+        '',
+        '## Models used',
+        '- Codex',
+        '',
+        '## Blockers / open questions',
+        '- None.',
+        '',
+        '## Next session should start with',
+        '- Wire MCP.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const provider = new LocalReadProvider(rootDir);
+
+    const projectContext = await provider.getProjectContext();
+    const featureContext = await provider.getFeatureContext({
+      featureSlug: 'mcp-server--context-delivery',
+    });
+    const decisionLog = await provider.getDecisionLog({ limit: 5 });
+    const conflicts = await provider.getConflicts();
+    const fileContext = await provider.getFileContext({
+      filepath: 'mcp:src/tools/read.ts',
+    });
+
+    assert.equal((projectContext.data as { project: { name: string } }).project.name, 'Local MCP');
+    assert.equal((projectContext.data as { domains: unknown[] }).domains.length, 1);
+    assert.equal(
+      (
+        featureContext.data as {
+          feature: { feature_slug: string; components: Array<{ component_key: string }> };
+        }
+      ).feature.feature_slug,
+      'mcp-server--context-delivery',
+    );
+    assert.equal(
+      (
+        featureContext.data as {
+          feature: { feature_slug: string; components: Array<{ component_key: string }> };
+        }
+      ).feature.components[0].component_key,
+      'read-tools',
+    );
+    assert.equal(
+      (decisionLog.data as { decisions: Array<{ decision_id: number }> }).decisions[0].decision_id,
+      159,
+    );
+    assert.deepEqual((conflicts.data as { conflicts: unknown[] }).conflicts, []);
+    assert.match(
+      (conflicts.data as { _note: string })._note,
+      /not available from the local root/,
+    );
+    assert.equal(
+      (fileContext.data as { owners: Array<{ feature_slug: string }> }).owners[0].feature_slug,
+      'mcp-server--context-delivery',
+    );
+  } finally {
+    await rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('local read provider reuses the read model until the root signature changes', async () => {
+  let signature = {
+    contentFingerprint: 'sig-1',
+    stateManifestHash: 'manifest-1',
+  };
+  let loadCount = 0;
+
+  const provider = new LocalReadProvider('/virtual/root', undefined, {
+    async coreModuleLoader() {
+      return {
+        async loadProjectReadModel() {
+          loadCount += 1;
+
+          return {
+            freshness: `fresh-${loadCount}`,
+            manifest_state: { manifest_hash: `scan-${loadCount}` },
+            features: [],
+          };
+        },
+        getProjectContext() {
+          return {
+            project: { name: `Project ${loadCount}` },
+            domains: [],
+            recent_decisions: [],
+            recent_sessions: [],
+            warning_summary: { total: 0, by_code: [] },
+            manifest_state: { manifest_hash: `scan-${loadCount}` },
+          };
+        },
+        getFeatureContext() {
+          return null;
+        },
+        getDecisionLog() {
+          return { decisions: [] };
+        },
+        getFileContext() {
+          return { owners: [], path: 'virtual:file' };
+        },
+      };
+    },
+    async rootSignatureLoader() {
+      return signature;
+    },
+  });
+
+  const first = await provider.getProjectContext();
+  const second = await provider.getProjectContext();
+
+  assert.equal(loadCount, 1);
+  assert.equal(
+    (first.data as { project: { name: string } }).project.name,
+    'Project 1',
+  );
+  assert.equal(
+    (second.data as { project: { name: string } }).project.name,
+    'Project 1',
+  );
+
+  signature = {
+    contentFingerprint: 'sig-2',
+    stateManifestHash: 'manifest-1',
+  };
+
+  const afterContentChange = await provider.getProjectContext();
+
+  assert.equal(loadCount, 2);
+  assert.equal(
+    (afterContentChange.data as { project: { name: string } }).project.name,
+    'Project 2',
+  );
+
+  signature = {
+    contentFingerprint: 'sig-2',
+    stateManifestHash: 'manifest-2',
+  };
+
+  const afterManifestChange = await provider.getProjectContext();
+
+  assert.equal(loadCount, 3);
+  assert.equal(
+    (afterManifestChange.data as { project: { name: string } }).project.name,
+    'Project 3',
+  );
 });

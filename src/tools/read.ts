@@ -1,11 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { VibeCompassClient } from '../api-client.js';
 import { formatResponse } from '../format.js';
+import type { ReadProvider } from '../read-provider.js';
 
 export function registerReadTools(
   server: McpServer,
-  client: VibeCompassClient,
+  provider: ReadProvider,
 ): void {
   server.registerTool(
     'get_project_context',
@@ -14,7 +14,7 @@ export function registerReadTools(
         'Call this FIRST at the START of every coding session. Returns a summary of the entire project: domains, features, their statuses, recent decisions, and open conflicts. Use this to orient yourself before writing any code. If you need detail on a specific feature, follow up with get_feature_context.',
     },
     async () => {
-      const response = await client.get('/api/mcp/context');
+      const response = await provider.getProjectContext();
       return formatResponse(response);
     },
   );
@@ -28,7 +28,7 @@ export function registerReadTools(
         feature_slug: z
           .string()
           .describe(
-            'The slug of the feature to get context for. In repo-local multi-repo projects this may be repo-prefixed (for example "web--authentication"). Discover exact slugs via get_project_context() or get_file_context().',
+            'The slug of the feature to get context for. This may be an adapter-defined composite slug (for example "web--authentication" or "mcp-server--context-delivery"). Discover exact slugs via get_project_context() or get_file_context().',
           ),
         component_slug: z
           .string()
@@ -37,12 +37,10 @@ export function registerReadTools(
       },
     },
     async ({ feature_slug, component_slug }) => {
-      const params: Record<string, string | undefined> = {};
-      if (component_slug) params.component = component_slug;
-      const response = await client.get(
-        `/api/mcp/features/${encodeURIComponent(feature_slug)}`,
-        params,
-      );
+      const response = await provider.getFeatureContext({
+        featureSlug: feature_slug,
+        componentSlug: component_slug,
+      });
       return formatResponse(response);
     },
   );
@@ -62,16 +60,15 @@ export function registerReadTools(
           .string()
           .optional()
           .describe(
-            'Optional feature slug to filter decisions. In repo-local multi-repo projects this may be repo-prefixed (for example "web--authentication").',
+            'Optional feature slug to filter decisions. This may be an adapter-defined composite slug (for example "web--authentication" or "mcp-server--context-delivery").',
           ),
       },
     },
     async ({ limit, feature_slug }) => {
-      const params: Record<string, string | undefined> = {
-        limit: String(limit),
-        feature_slug,
-      };
-      const response = await client.get('/api/mcp/decisions', params);
+      const response = await provider.getDecisionLog({
+        limit,
+        featureSlug: feature_slug,
+      });
       return formatResponse(response);
     },
   );
@@ -83,7 +80,7 @@ export function registerReadTools(
         'Check for open conflicts before starting work. Conflicts indicate areas where code changes contradicted prior decisions or where patterns collided. You MUST check conflicts before modifying affected features.',
     },
     async () => {
-      const response = await client.get('/api/mcp/conflicts');
+      const response = await provider.getConflicts();
       return formatResponse(response);
     },
   );
@@ -102,8 +99,7 @@ export function registerReadTools(
       },
     },
     async ({ filepath }) => {
-      // Send filepath as query param to avoid URL encoding issues with slashes
-      const response = await client.get('/api/mcp/files', { path: filepath });
+      const response = await provider.getFileContext({ filepath });
       return formatResponse(response);
     },
   );
