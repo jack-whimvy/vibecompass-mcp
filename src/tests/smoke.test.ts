@@ -6,6 +6,7 @@ import test from 'node:test';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { VibeCompassClient } from '../api-client.js';
 import { formatError, formatResponse } from '../format.js';
+import { HostedReadProvider } from '../providers/hosted-read.js';
 import { LocalReadProvider } from '../providers/local-read.js';
 import type { ReadProvider } from '../read-provider.js';
 import { registerReadTools } from '../tools/read.js';
@@ -31,6 +32,20 @@ function createFakeServer(registry: Map<string, RegisteredTool>): McpServer {
       registry.set(name, { config, handler });
     },
   } as unknown as McpServer;
+}
+
+function assertHostedDecisionRowShape(row: Record<string, unknown>) {
+  assert.equal(typeof row.decisionNumber, 'number');
+  assert.equal(typeof row.title, 'string');
+  assert.equal(typeof row.description, 'string');
+  assert.match(
+    String(row.createdAt),
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/,
+  );
+
+  if ('source' in row) {
+    assert.match(String(row.source), /^(mcp|scan|manual|pipeline)$/);
+  }
 }
 
 test('format helpers surface stale data and hard errors correctly', () => {
@@ -280,6 +295,17 @@ test('local read provider serves project and file context from the local root', 
       'utf8',
     );
     await writeFile(
+      path.join(rootDir, 'decisions/mcp-server.md'),
+      [
+        '### D-180 — Hybrid MCP conflict reads prefer hosted conflict metadata',
+        '**Timestamp:** 2026-04-26 01:43 PDT',
+        '**Decision:** In Hybrid mode, get_conflicts reads from the hosted API.',
+        '**Rationale:** Conflicts remain hosted collaboration metadata.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await writeFile(
       path.join(rootDir, 'sessions/2026-04-19-1-local-mcp.md'),
       [
         '# Session — 2026-04-19-1 — Local MCP',
@@ -313,6 +339,10 @@ test('local read provider serves project and file context from the local root', 
       featureSlug: 'mcp-server--context-delivery',
     });
     const decisionLog = await provider.getDecisionLog({ limit: 5 });
+    const filteredDecisionLog = await provider.getDecisionLog({
+      limit: 5,
+      featureSlug: 'mcp-server--context-delivery',
+    });
     const conflicts = await provider.getConflicts();
     const fileContext = await provider.getFileContext({
       filepath: 'mcp:src/tools/read.ts',
@@ -337,21 +367,195 @@ test('local read provider serves project and file context from the local root', 
       'read-tools',
     );
     assert.equal(
-      (decisionLog.data as { decisions: Array<{ decision_id: number }> }).decisions[0].decision_id,
-      159,
+      (decisionLog.data as Array<{ decisionNumber: number }>)[0].decisionNumber,
+      180,
+    );
+    const filteredDecisionPayload = filteredDecisionLog.data as {
+      decisions: Array<Record<string, unknown>>;
+      _note: string;
+    };
+    assert.deepEqual(
+      filteredDecisionPayload.decisions.map((decision) => decision.decisionNumber),
+      [180],
+    );
+    assert.match(
+      filteredDecisionPayload._note,
+      /Results are scoped to the "mcp-server" decision file/,
+    );
+    assertHostedDecisionRowShape(filteredDecisionPayload.decisions[0]);
+    assert.equal('source' in filteredDecisionPayload.decisions[0], false);
+    assert.equal(
+      filteredDecisionPayload.decisions[0].createdAt,
+      '2026-04-26T08:43:00.000Z',
     );
     assert.deepEqual((conflicts.data as { conflicts: unknown[] }).conflicts, []);
-    assert.match(
+    assert.equal(
       (conflicts.data as { _note: string })._note,
-      /not available from the local root/,
+      'Hosted collaboration conflicts are unavailable in Local mode without VIBECOMPASS_API_KEY. This response does not indicate that local files were checked for hosted conflict records.',
     );
+    assert.equal(conflicts._freshness, projectContext._freshness);
     assert.equal(
       (fileContext.data as { owners: Array<{ feature_slug: string }> }).owners[0].feature_slug,
       'mcp-server--context-delivery',
     );
+
+    const missingFeatureDecisionLog = await provider.getDecisionLog({
+      limit: 5,
+      featureSlug: 'mcp-server--missing',
+    });
+    assert.deepEqual(
+      (missingFeatureDecisionLog.data as { decisions: unknown[] }).decisions,
+      [],
+    );
+    assert.equal(
+      (missingFeatureDecisionLog.data as { _note: string })._note,
+      'Feature "mcp-server--missing" was not found in the local root.',
+    );
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }
+});
+
+test('local and hosted read providers assert decision and conflict fixture contracts', async () => {
+  const freshness = '2026-04-26T08:43:00.000Z';
+  // Modeled after GET /api/mcp/decisions?limit=5&feature_slug=...:
+  // hosted rows use numeric decisionNumber, ISO createdAt, and source from the DB enum.
+  const hostedDecisionFixture = [
+    {
+      decisionNumber: 180,
+      title: 'Hybrid MCP conflict reads prefer hosted conflict metadata',
+      description: 'In Hybrid mode, get_conflicts reads from the hosted API.',
+      source: 'mcp',
+      createdAt: freshness,
+    },
+  ];
+  const localDecisionFixture = [
+    {
+      decision_id: 180,
+      title: 'Hybrid MCP conflict reads prefer hosted conflict metadata',
+      decision: 'In Hybrid mode, get_conflicts reads from the hosted API.',
+      timestamp: '2026-04-26 01:43 PDT',
+      domain_file: 'mcp-server',
+      source: 'mcp',
+    },
+    {
+      decision_id: 176,
+      title: 'Publish the core package under the VibeCompass npm org scope',
+      decision: 'Publish the core package under the VibeCompass npm org scope.',
+      timestamp: freshness,
+      domain_file: 'cross-cutting',
+      source: 'manual',
+    },
+  ];
+  const hostedConflictFixture = {
+    conflicts: [],
+    _note:
+      'Hosted collaboration conflicts are unavailable in Local mode without VIBECOMPASS_API_KEY. This response does not indicate that local files were checked for hosted conflict records.',
+  };
+
+  const localProvider = new LocalReadProvider('/virtual/root', undefined, {
+    async coreModuleLoader() {
+      return {
+        async loadProjectReadModel() {
+          return {
+            freshness,
+            features: [
+              {
+                feature_key: 'mcp-server--context-delivery',
+                domain_key: 'mcp-server',
+                feature_slug: 'context-delivery',
+              },
+            ],
+          };
+        },
+        getProjectContext() {
+          return {
+            project: { name: 'Local MCP' },
+            domains: [],
+            recent_decisions: [],
+            recent_sessions: [],
+            warning_summary: { total: 0, by_code: [] },
+          };
+        },
+        getFeatureContext() {
+          return null;
+        },
+        getDecisionLog() {
+          return {
+            decisions: localDecisionFixture,
+          };
+        },
+        getFileContext() {
+          return { owners: [], path: 'virtual:file' };
+        },
+      };
+    },
+    async rootSignatureLoader() {
+      return {
+        contentFingerprint: 'sig-1',
+        stateManifestHash: 'manifest-1',
+      };
+    },
+  });
+
+  const hostedProvider = new HostedReadProvider({
+    async get(pathname: string) {
+      if (pathname === '/api/mcp/decisions') {
+        return { data: hostedDecisionFixture, _freshness: freshness };
+      }
+
+      if (pathname === '/api/mcp/conflicts') {
+        return { data: hostedConflictFixture, _freshness: freshness };
+      }
+
+      throw new Error(`Unexpected fixture path: ${pathname}`);
+    },
+  } as unknown as VibeCompassClient);
+
+  const localDecisions = await localProvider.getDecisionLog({
+    limit: 5,
+    featureSlug: 'mcp-server--context-delivery',
+  });
+  const hostedDecisions = await hostedProvider.getDecisionLog({
+    limit: 5,
+    featureSlug: 'mcp-server--context-delivery',
+  });
+  const localConflicts = await localProvider.getConflicts();
+  const hostedConflicts = await hostedProvider.getConflicts();
+
+  assert.equal(Array.isArray(hostedDecisions.data), true);
+  const localDecisionPayload = localDecisions.data as {
+    decisions: Array<Record<string, unknown>>;
+    _note: string;
+  };
+  assert.equal(Array.isArray(localDecisionPayload.decisions), true);
+  assert.match(
+    localDecisionPayload._note,
+    /Local mode does not yet store feature-level decision links/,
+  );
+  assertHostedDecisionRowShape(
+    localDecisionPayload.decisions[0],
+  );
+  assertHostedDecisionRowShape(
+    (hostedDecisions.data as Array<Record<string, unknown>>)[0],
+  );
+  assert.equal(
+    localDecisionPayload.decisions[0].source,
+    'mcp',
+  );
+  assert.equal(
+    localDecisionPayload.decisions[0].createdAt,
+    freshness,
+  );
+  assert.deepEqual(
+    Object.keys(localConflicts.data as Record<string, unknown>).sort(),
+    Object.keys(hostedConflicts.data as Record<string, unknown>).sort(),
+  );
+  assert.equal(
+    (localConflicts.data as { _note: string })._note,
+    (hostedConflicts.data as { _note: string })._note,
+  );
+  assert.equal(localConflicts._freshness, freshness);
 });
 
 test('local read provider reuses the read model until the root signature changes', async () => {

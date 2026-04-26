@@ -12,7 +12,7 @@ decisions, conflicts, and session handoff notes.
 - One of:
   - `VIBECOMPASS_API_KEY` for hosted mode
   - `VIBECOMPASS_ROOT` for local read mode
-- For local mode today, the `vibecompass` core package must be importable or available as the sibling workspace checkout used in this repo
+- Local mode uses the bundled `@vibecompass/vibecompass` core dependency for file-backed reads
 
 ## Environment
 

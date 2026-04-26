@@ -36,6 +36,7 @@
     "url": "https://github.com/jack-whimvy/vibecompass-mcp/issues"
   },
   "dependencies": {
+    "@vibecompass/vibecompass": "^0.1.0",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "zod": "^3.23.0"
   },

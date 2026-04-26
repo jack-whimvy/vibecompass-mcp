@@ -12,6 +12,9 @@ const LOG_FILE = join(LOG_DIR, 'mcp-errors.log');
 const NON_CANONICAL_DECISION_FILES = new Set(['INDEX.md']);
 const NON_CANONICAL_SESSION_FILES = new Set(['wip.md', 'handoff.md']);
 const NON_CANONICAL_ARCHITECTURE_FILES = new Set(['README.md']);
+const LOCAL_CONFLICTS_UNAVAILABLE_NOTE =
+  'Hosted collaboration conflicts are unavailable in Local mode without VIBECOMPASS_API_KEY. This response does not indicate that local files were checked for hosted conflict records.';
+const HOSTED_DECISION_SOURCES = new Set(['mcp', 'scan', 'manual', 'pipeline']);
 
 interface CacheEntry {
   data: unknown;
@@ -122,16 +125,42 @@ export class LocalReadProvider implements ReadProvider {
       `get_decision_log:${input.limit}:${input.featureSlug ?? ''}`,
       async () => {
         const { core, readModel } = await this.loadCoreModel();
-        const data = core.getDecisionLog(readModel, { limit: input.limit });
+        const feature = input.featureSlug
+          ? findFeatureByExternalSlug(readModel.features, input.featureSlug)
+          : null;
+        // Local decisions are grouped by canonical decision file, so filtered reads
+        // inspect a wider raw window before narrowing to the feature's domain file.
+        const data = core.getDecisionLog(readModel, {
+          limit: input.featureSlug ? 100 : input.limit,
+        });
+        if (input.featureSlug && !feature) {
+          return {
+            data: {
+              decisions: [],
+              _note: `Feature "${input.featureSlug}" was not found in the local root.`,
+            },
+            _freshness: readModel.freshness,
+          };
+        }
+
+        const decisions =
+          input.featureSlug && feature
+            ? data.decisions
+                .filter((decision: any) =>
+                  decisionBelongsToFeatureDomain(decision, feature),
+                )
+                .slice(0, input.limit)
+            : data.decisions;
+        const transformed = decisions.map(transformDecisionLogDecision);
 
         return {
-          data: input.featureSlug
-            ? {
-                ...data,
-                _note:
-                  'feature_slug filtering is not yet available in local mode; returning the latest decisions across the local root.',
-              }
-            : data,
+          data:
+            input.featureSlug && feature
+              ? {
+                  decisions: transformed,
+                  _note: `Local mode does not yet store feature-level decision links. Results are scoped to the "${feature.domain_key}" decision file for feature "${input.featureSlug}".`,
+                }
+              : transformed,
           _freshness: readModel.freshness,
         };
       },
@@ -143,14 +172,17 @@ export class LocalReadProvider implements ReadProvider {
       return this.hostedClient.get('/api/mcp/conflicts');
     }
 
-    return {
-      data: {
-        conflicts: [],
-        _note:
-          'Conflicts are hosted collaboration metadata and are not available from the local root without a hosted connection.',
+    return this.withResilience(
+      'get_conflicts',
+      async () => {
+        const { readModel } = await this.loadCoreModel();
+        return {
+          data: getLocalConflictsUnavailableData(),
+          _freshness: readModel.freshness,
+        };
       },
-      _freshness: new Date().toISOString(),
-    };
+      getLocalConflictsUnavailableData(),
+    );
   }
 
   async getFileContext(input: { filepath: string }): Promise<ApiResponse> {
@@ -234,6 +266,9 @@ export class LocalReadProvider implements ReadProvider {
   private async withResilience(
     cacheKey: string,
     loader: () => Promise<ApiResponse>,
+    // Some tools, such as Local get_conflicts (D-179), have a stable empty shape.
+    // Other local read failures fall back to null so clients do not confuse absence with an authoritative empty result.
+    fallbackData: unknown = null,
   ): Promise<ApiResponse> {
     try {
       const response = await withTimeout(loader(), TIMEOUT_MS);
@@ -255,7 +290,7 @@ export class LocalReadProvider implements ReadProvider {
       }
 
       return {
-        data: null,
+        data: fallbackData,
         _freshness: new Date().toISOString(),
         _stale: true,
       };
@@ -280,22 +315,15 @@ export class LocalReadProvider implements ReadProvider {
 }
 
 async function importLocalCoreModule(): Promise<LocalCoreModule> {
-  const candidates = ['vibecompass', '../../../vibecompass/src/index.js'];
-  let lastError: unknown;
-
-  for (const specifier of candidates) {
-    try {
-      return (await import(specifier)) as LocalCoreModule;
-    } catch (error) {
-      lastError = error;
-    }
+  try {
+    return (await import('@vibecompass/vibecompass')) as LocalCoreModule;
+  } catch (error) {
+    throw new Error(
+      `Failed to load @vibecompass/vibecompass for local mode: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
-
-  throw new Error(
-    `Failed to load the vibecompass core package for local mode: ${
-      lastError instanceof Error ? lastError.message : String(lastError)
-    }`,
-  );
 }
 
 function toExternalFeatureSlug(entity: {
@@ -308,6 +336,81 @@ function toExternalFeatureSlug(entity: {
   }
 
   return `${entity.domain_key ?? 'unknown'}--${entity.feature_slug ?? 'unknown'}`;
+}
+
+function findFeatureByExternalSlug(features: any[], featureSlug: string): any | null {
+  return (
+    features.find((feature: any) => toExternalFeatureSlug(feature) === featureSlug) ??
+    null
+  );
+}
+
+function decisionBelongsToFeatureDomain(decision: any, feature: any): boolean {
+  return decision.domain_file === feature.domain_key;
+}
+
+function transformDecisionLogDecision(decision: any) {
+  const row: Record<string, unknown> = {
+    decisionNumber: decision.decision_id,
+    title: decision.title,
+    description: decision.decision,
+    createdAt: normalizeDecisionTimestamp(decision.timestamp),
+  };
+
+  if (typeof decision.source === 'string' && HOSTED_DECISION_SOURCES.has(decision.source)) {
+    row.source = decision.source;
+  }
+
+  return row;
+}
+
+function getLocalConflictsUnavailableData() {
+  return {
+    conflicts: [],
+    _note: LOCAL_CONFLICTS_UNAVAILABLE_NOTE,
+  };
+}
+
+function normalizeDecisionTimestamp(timestamp: unknown): string | null {
+  if (timestamp instanceof Date) {
+    return timestamp.toISOString();
+  }
+
+  if (typeof timestamp !== 'string' || timestamp.trim().length === 0) {
+    return null;
+  }
+
+  const trimmed = timestamp.trim();
+  const parsed = Date.parse(trimmed);
+  if (!Number.isNaN(parsed)) {
+    return new Date(parsed).toISOString();
+  }
+
+  const timezoneNormalized = trimmed.replace(
+    /\s+(PDT|PST|EDT|EST|CDT|CST|MDT|MST|UTC|GMT)$/,
+    (_match, zone: string) => {
+      // Current canonical files use US timezone abbreviations; extend this
+      // allowlist if international shorthand appears in project memory.
+      const offsets: Record<string, string> = {
+        PDT: '-07:00',
+        PST: '-08:00',
+        EDT: '-04:00',
+        EST: '-05:00',
+        CDT: '-05:00',
+        CST: '-06:00',
+        MDT: '-06:00',
+        MST: '-07:00',
+        UTC: 'Z',
+        GMT: 'Z',
+      };
+      return offsets[zone] ? ` ${offsets[zone]}` : _match;
+    },
+  );
+  const normalizedParsed = Date.parse(timezoneNormalized);
+
+  return Number.isNaN(normalizedParsed)
+    ? null
+    : new Date(normalizedParsed).toISOString();
 }
 
 function transformProjectContext(readModel: any, data: any) {
