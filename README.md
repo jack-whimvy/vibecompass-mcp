@@ -56,7 +56,22 @@ for current dogfood status.
 
 ### Hosted mode
 
-### Claude Code (`.mcp.json` or `claude mcp add-json`)
+### Claude Code (`claude mcp add`)
+
+```bash
+claude mcp add --transport stdio vibecompass \
+  --env VIBECOMPASS_API_KEY='your-api-key' \
+  --env VIBECOMPASS_API_URL='https://vibecompass.dev' \
+  -- npx -y @vibecompass/vibecompass-mcp
+```
+
+### Claude Code (`claude mcp add-json`)
+
+```bash
+claude mcp add-json vibecompass '{"type":"stdio","command":"npx","args":["-y","@vibecompass/vibecompass-mcp"],"env":{"VIBECOMPASS_API_KEY":"your-api-key","VIBECOMPASS_API_URL":"https://vibecompass.dev"}}'
+```
+
+### Claude Code project config (`.mcp.json`)
 
 ```json
 {
@@ -112,6 +127,14 @@ Example env:
 {
   "VIBECOMPASS_ROOT": "/absolute/path/to/project-memory-root"
 }
+```
+
+Claude Code local-mode command:
+
+```bash
+claude mcp add --transport stdio vibecompass \
+  --env VIBECOMPASS_ROOT='/absolute/path/to/project-memory-root' \
+  -- npx -y @vibecompass/vibecompass-mcp
 ```
 
 ### Hybrid mode
