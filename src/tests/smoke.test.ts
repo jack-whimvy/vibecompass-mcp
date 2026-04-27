@@ -48,6 +48,22 @@ function assertHostedDecisionRowShape(row: Record<string, unknown>) {
   }
 }
 
+async function assertToolDoesNotThrow(
+  tool: RegisteredTool | undefined,
+  input?: Record<string, unknown>,
+): Promise<string> {
+  assert.ok(tool);
+  const result = await tool.handler(input) as {
+    content?: Array<{ type: string; text?: string }>;
+    isError?: boolean;
+  };
+  assert.equal(result.isError, undefined);
+  assert.ok(result.content?.length);
+  const firstText = getFirstText(result);
+  assert.notEqual(firstText, '');
+  return firstText;
+}
+
 test('format helpers surface stale data and hard errors correctly', () => {
   const stale = formatResponse({
     data: { ok: true },
@@ -126,6 +142,103 @@ test('API client falls back to cache on read failure and clears cache after writ
     const afterWriteFailure = await client.get('/api/mcp/context');
     assert.equal(afterWriteFailure._stale, true);
     assert.equal(afterWriteFailure.data, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('API client read timeout returns cached fallback without crashing', async (t) => {
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    callCount += 1;
+
+    if (callCount === 1) {
+      return new Response(
+        JSON.stringify({
+          data: { source: 'fresh' },
+          _freshness: '2026-04-12T00:00:00.000Z',
+        }),
+        { status: 200 },
+      );
+    }
+
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      });
+    });
+  }) as typeof fetch;
+
+  try {
+    const client = new VibeCompassClient({
+      apiKey: 'test-key',
+      baseUrl: 'https://example.com',
+    });
+
+    await client.get('/api/mcp/context');
+
+    const timedOutPromise = client.get('/api/mcp/context');
+    t.mock.timers.tick(5_000);
+    const timedOut = await timedOutPromise;
+
+    assert.equal(timedOut._stale, true);
+    assert.deepEqual(timedOut.data, { source: 'fresh' });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('hosted read tools return stale results instead of tool errors when the API is down', async () => {
+  const originalFetch = globalThis.fetch;
+  const tools = new Map<string, RegisteredTool>();
+  const server = createFakeServer(tools);
+
+  globalThis.fetch = (async () => {
+    throw new Error('hosted API unavailable');
+  }) as typeof fetch;
+
+  try {
+    registerReadTools(
+      server,
+      new HostedReadProvider(
+        new VibeCompassClient({
+          apiKey: 'test-key',
+          baseUrl: 'https://example.com',
+        }),
+      ),
+    );
+
+    const projectContext = await assertToolDoesNotThrow(
+      tools.get('get_project_context'),
+    );
+    const featureContext = await assertToolDoesNotThrow(
+      tools.get('get_feature_context'),
+      { feature_slug: 'mcp-server--context-delivery' },
+    );
+    const decisions = await assertToolDoesNotThrow(
+      tools.get('get_decision_log'),
+      { limit: 5, feature_slug: 'mcp-server--context-delivery' },
+    );
+    const conflicts = await assertToolDoesNotThrow(tools.get('get_conflicts'));
+    const fileContext = await assertToolDoesNotThrow(
+      tools.get('get_file_context'),
+      { filepath: 'mcp:src/tools/read.ts' },
+    );
+
+    for (const text of [
+      projectContext,
+      featureContext,
+      decisions,
+      conflicts,
+      fileContext,
+    ]) {
+      assert.match(text, /WARNING: This data may be stale/);
+      assert.match(text, /No data available/);
+    }
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -416,6 +529,44 @@ test('local read provider serves project and file context from the local root', 
   }
 });
 
+test('local read tools degrade without throwing when the root is missing', async () => {
+  const missingRoot = path.join(
+    os.tmpdir(),
+    `vibecompass-mcp-missing-${Date.now()}`,
+  );
+  const tools = new Map<string, RegisteredTool>();
+  const server = createFakeServer(tools);
+
+  registerReadTools(server, new LocalReadProvider(missingRoot));
+
+  const projectContext = await assertToolDoesNotThrow(
+    tools.get('get_project_context'),
+  );
+  const featureContext = await assertToolDoesNotThrow(
+    tools.get('get_feature_context'),
+    { feature_slug: 'mcp-server--context-delivery' },
+  );
+  const decisions = await assertToolDoesNotThrow(
+    tools.get('get_decision_log'),
+    { limit: 5, feature_slug: 'mcp-server--context-delivery' },
+  );
+  const conflicts = await assertToolDoesNotThrow(tools.get('get_conflicts'));
+  const fileContext = await assertToolDoesNotThrow(
+    tools.get('get_file_context'),
+    { filepath: 'mcp:src/tools/read.ts' },
+  );
+
+  assert.match(projectContext, /WARNING: This data may be stale/);
+  assert.match(projectContext, /No data available/);
+  assert.match(featureContext, /WARNING: This data may be stale/);
+  assert.match(featureContext, /No data available/);
+  assert.match(decisions, /WARNING: This data may be stale/);
+  assert.match(decisions, /No data available/);
+  assert.match(conflicts, /"conflicts": \[\]/);
+  assert.match(fileContext, /WARNING: This data may be stale/);
+  assert.match(fileContext, /No data available/);
+});
+
 test('local and hosted read providers assert decision and conflict fixture contracts', async () => {
   const freshness = '2026-04-26T08:43:00.000Z';
   // Modeled after GET /api/mcp/decisions?limit=5&feature_slug=...:
@@ -641,4 +792,69 @@ test('local read provider reuses the read model until the root signature changes
     (afterManifestChange.data as { project: { name: string } }).project.name,
     'Project 3',
   );
+});
+
+test('hybrid mode keeps local reads available when hosted conflict reads fail', async () => {
+  const hostedClient = {
+    async get(pathname: string) {
+      assert.equal(pathname, '/api/mcp/conflicts');
+      return {
+        data: null,
+        _freshness: '2026-04-26T09:00:00.000Z',
+        _stale: true,
+      };
+    },
+  } as unknown as VibeCompassClient;
+
+  let localLoadCount = 0;
+  const provider = new LocalReadProvider('/virtual/root', hostedClient, {
+    async coreModuleLoader() {
+      return {
+        async loadProjectReadModel() {
+          localLoadCount += 1;
+          return {
+            freshness: '2026-04-26T08:43:00.000Z',
+            features: [],
+          };
+        },
+        getProjectContext() {
+          return {
+            project: { name: 'Hybrid Local MCP' },
+            domains: [],
+            recent_decisions: [],
+            recent_sessions: [],
+            warning_summary: { total: 0, by_code: [] },
+          };
+        },
+        getFeatureContext() {
+          return null;
+        },
+        getDecisionLog() {
+          return { decisions: [] };
+        },
+        getFileContext() {
+          return { owners: [], path: 'virtual:file' };
+        },
+      };
+    },
+    async rootSignatureLoader() {
+      return {
+        contentFingerprint: 'sig-1',
+        stateManifestHash: 'manifest-1',
+      };
+    },
+  });
+
+  const conflicts = await provider.getConflicts();
+  const projectContext = await provider.getProjectContext();
+
+  assert.equal(conflicts._stale, true);
+  assert.equal(conflicts._error, undefined);
+  assert.equal(conflicts.data, null);
+  assert.equal(
+    (projectContext.data as { project: { name: string } }).project.name,
+    'Hybrid Local MCP',
+  );
+  assert.equal(projectContext._stale, undefined);
+  assert.equal(localLoadCount, 1);
 });

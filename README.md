@@ -33,37 +33,37 @@ Hybrid mode:
 
 ## Install
 
-### Pre-release
-
-Until the npm package is published, run the public GitHub package spec:
-
-```bash
-npx -y github:jack-whimvy/vibecompass-mcp
-```
-
-The package includes a `prepare` script so GitHub installs build `dist/`
-before execution.
-
 ### npm
 
-Once published, the install target becomes:
+Run the public scoped package:
 
 ```bash
-npx -y vibecompass-mcp
+npx -y @vibecompass/vibecompass-mcp
 ```
+
+## Development
+
+`npm test` uses Node's `t.mock.timers` for timeout coverage. Node 20 prints an
+experimental MockTimers warning; the warning is expected and does not indicate a
+test failure.
+
+Known upstream client issues: Codex 0.33 issue #3426 and Claude Code 2.0.76's
+internal `effortLevel` failure. See
+https://github.com/jack-whimvy/vibecompass-docs/blob/main/architecture/mcp-server/context-delivery/resilience.md
+for current dogfood status.
 
 ## Example config
 
 ### Hosted mode
 
-### Claude Code (`.claude/settings.json`)
+### Claude Code (`.mcp.json` or `claude mcp add-json`)
 
 ```json
 {
   "mcpServers": {
     "vibecompass": {
       "command": "npx",
-      "args": ["-y", "github:jack-whimvy/vibecompass-mcp"],
+      "args": ["-y", "@vibecompass/vibecompass-mcp"],
       "env": {
         "VIBECOMPASS_API_KEY": "your-api-key",
         "VIBECOMPASS_API_URL": "https://vibecompass.dev"
@@ -73,16 +73,18 @@ npx -y vibecompass-mcp
 }
 ```
 
-### Cursor (`.cursor/mcp.json`)
+### Cursor (`~/.cursor/mcp.json`)
 
 ```json
 {
-  "vibecompass": {
-    "command": "npx",
-    "args": ["-y", "github:jack-whimvy/vibecompass-mcp"],
-    "env": {
-      "VIBECOMPASS_API_KEY": "your-api-key",
-      "VIBECOMPASS_API_URL": "https://vibecompass.dev"
+  "mcpServers": {
+    "vibecompass": {
+      "command": "npx",
+      "args": ["-y", "@vibecompass/vibecompass-mcp"],
+      "env": {
+        "VIBECOMPASS_API_KEY": "your-api-key",
+        "VIBECOMPASS_API_URL": "https://vibecompass.dev"
+      }
     }
   }
 }
@@ -90,11 +92,14 @@ npx -y vibecompass-mcp
 
 ### Codex
 
-Use:
+Add this to `~/.codex/config.toml`:
 
-- command: `npx`
-- args: `-y`, `github:jack-whimvy/vibecompass-mcp`
-- env: `VIBECOMPASS_API_KEY`, `VIBECOMPASS_API_URL`
+```toml
+[mcp_servers.vibecompass]
+command = "npx"
+args = ["-y", "@vibecompass/vibecompass-mcp"]
+env = { VIBECOMPASS_API_KEY = "your-api-key", VIBECOMPASS_API_URL = "https://vibecompass.dev" }
+```
 
 Keep the repo-level `AGENTS.md` file committed so Codex knows when to call the
 VibeCompass tools.
