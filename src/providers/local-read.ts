@@ -14,6 +14,8 @@ const NON_CANONICAL_SESSION_FILES = new Set(['wip.md', 'handoff.md']);
 const NON_CANONICAL_ARCHITECTURE_FILES = new Set(['README.md']);
 const LOCAL_CONFLICTS_UNAVAILABLE_NOTE =
   'Hosted collaboration conflicts are unavailable in Local mode without VIBECOMPASS_API_KEY. This response does not indicate that local files were checked for hosted conflict records.';
+const LOCAL_PROPOSALS_UNAVAILABLE_NOTE =
+  'Hosted proposals are unavailable in Local mode without VIBECOMPASS_API_KEY. Local project-memory files remain authoritative; use the package sync flow when hosted proposals are available.';
 const HOSTED_DECISION_SOURCES = new Set(['mcp', 'scan', 'manual', 'pipeline']);
 
 interface CacheEntry {
@@ -203,6 +205,26 @@ export class LocalReadProvider implements ReadProvider {
     });
   }
 
+  async listPendingProposals(input: { status?: string }): Promise<ApiResponse> {
+    if (this.hostedClient) {
+      return this.hostedClient.get('/api/mcp/proposals', {
+        status: input.status ?? 'open',
+      });
+    }
+
+    return this.withResilience(
+      `list_pending_proposals:${input.status ?? 'open'}`,
+      async () => {
+        const { readModel } = await this.loadCoreModel();
+        return {
+          data: getLocalProposalsUnavailableData(),
+          _freshness: readModel.freshness,
+        };
+      },
+      getLocalProposalsUnavailableData(),
+    );
+  }
+
   private async loadCoreModel(): Promise<{
     core: LocalCoreModule;
     readModel: any;
@@ -368,6 +390,13 @@ function getLocalConflictsUnavailableData() {
   return {
     conflicts: [],
     _note: LOCAL_CONFLICTS_UNAVAILABLE_NOTE,
+  };
+}
+
+function getLocalProposalsUnavailableData() {
+  return {
+    proposals: [],
+    _note: LOCAL_PROPOSALS_UNAVAILABLE_NOTE,
   };
 }
 

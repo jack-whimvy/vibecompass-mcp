@@ -275,6 +275,10 @@ test('read and write tool registries expose the expected tool surface', async ()
       readCalls.push({ method: 'getFileContext', payload });
       return { data: { ok: true }, _freshness: '2026-04-12T00:00:00.000Z' };
     },
+    async listPendingProposals(payload) {
+      readCalls.push({ method: 'listPendingProposals', payload });
+      return { data: { proposals: [] }, _freshness: '2026-04-12T00:00:00.000Z' };
+    },
   };
 
   const writeClient = {
@@ -301,12 +305,14 @@ test('read and write tool registries expose the expected tool surface', async ()
       'get_feature_context',
       'get_file_context',
       'get_project_context',
+      'list_pending_proposals',
       'log_decision',
       'update_feature_status',
     ].sort(),
   );
 
   await tools.get('get_file_context')?.handler({ filepath: 'src/lib/auth.ts' });
+  await tools.get('list_pending_proposals')?.handler({ status: 'open' });
   await tools.get('update_feature_status')?.handler({
     feature_slug: 'auth',
     status: 'complete',
@@ -321,6 +327,10 @@ test('read and write tool registries expose the expected tool surface', async ()
     {
       method: 'getFileContext',
       payload: { filepath: 'src/lib/auth.ts' },
+    },
+    {
+      method: 'listPendingProposals',
+      payload: { status: 'open' },
     },
   ]);
 

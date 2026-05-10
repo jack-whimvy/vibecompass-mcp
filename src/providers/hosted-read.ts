@@ -40,4 +40,10 @@ export class HostedReadProvider implements ReadProvider {
   getFileContext(input: { filepath: string }): Promise<ApiResponse> {
     return this.client.get('/api/mcp/files', { path: input.filepath });
   }
+
+  listPendingProposals(input: { status?: string }): Promise<ApiResponse> {
+    return this.client.get('/api/mcp/proposals', {
+      status: input.status ?? 'open',
+    });
+  }
 }

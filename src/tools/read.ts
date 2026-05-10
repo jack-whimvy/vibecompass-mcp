@@ -103,4 +103,23 @@ export function registerReadTools(
       return formatResponse(response);
     },
   );
+
+  server.registerTool(
+    'list_pending_proposals',
+    {
+      description:
+        'Read hosted proposal summaries for Hybrid mode. This is read-only: local project-memory files remain authoritative, and proposal application must happen through the VibeCompass package sync flow.',
+      inputSchema: {
+        status: z
+          .enum(['open', 'stale', 'dismissed', 'applied'])
+          .optional()
+          .default('open')
+          .describe('Proposal status to list. Defaults to open pending proposals.'),
+      },
+    },
+    async ({ status }) => {
+      const response = await provider.listPendingProposals({ status });
+      return formatResponse(response);
+    },
+  );
 }

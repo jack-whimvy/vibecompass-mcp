@@ -14,4 +14,7 @@ export interface ReadProvider {
   getFileContext(input: {
     filepath: string;
   }): Promise<ApiResponse>;
+  listPendingProposals(input: {
+    status?: string;
+  }): Promise<ApiResponse>;
 }
