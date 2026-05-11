@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://vibecompass.dev">
+    <img src="https://raw.githubusercontent.com/jack-whimvy/vibecompass-mcp/main/brand/logo-a4.png" alt="VibeCompass" height="96" />
+  </a>
+</p>
+
 # vibecompass-mcp
 
 MCP stdio server for [VibeCompass](https://vibecompass.dev).
