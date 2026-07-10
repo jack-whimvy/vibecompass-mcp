@@ -155,6 +155,27 @@ Example env:
 }
 ```
 
+**Hybrid asymmetry, by design:** reads prefer the local root (conflicts and
+pending proposals still come from hosted — they are collaboration metadata),
+while ALL write tools (`log_decision`, `add_session_summary`,
+`update_feature_status`, `flag_conflict`) go to the hosted project only.
+A decision logged over MCP lands in the hosted structured tables and does
+NOT appear in your local canonical `decisions/*.md` unless it comes back
+through the proposal flow. Local file writes stay with the
+`@vibecompass/vibecompass` package.
+
+### Changing a project's hosting mode
+
+Environment variables are read once at startup — after moving a project
+between modes, update the variables and **restart the MCP server**:
+
+- **Promoted to hosted-only** (`vibecompass promote-hosted`): set
+  `VIBECOMPASS_API_KEY` (create a key on the hosted Setup page) and remove
+  `VIBECOMPASS_ROOT`.
+- **Demoted to local-primary** (`vibecompass demote-hosted`): set
+  `VIBECOMPASS_ROOT` back to the local root; keep the API key for hybrid
+  writes if you want them.
+
 ## Local development
 
 ```bash
