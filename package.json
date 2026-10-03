@@ -1,6 +1,6 @@
 {
   "name": "@vibecompass/vibecompass-mcp",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "MCP server for VibeCompass — AI project context management",
   "type": "module",
   "bin": {
@@ -37,7 +37,7 @@
     "url": "https://github.com/jack-whimvy/vibecompass-mcp/issues"
   },
   "dependencies": {
-    "@vibecompass/vibecompass": "^0.16.0",
+    "@vibecompass/vibecompass": "^0.17.0",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "zod": "^3.23.0"
   },
