@@ -14,6 +14,8 @@ import {
   RECENT_DECISION_LIMIT,
   appendNote,
   applyHardCap,
+  notesFirst,
+  boundEcho,
   clampDecisionLimit,
   shedToBudget,
   type SheddingTier,
@@ -98,7 +100,7 @@ export class LocalReadProvider implements ReadProvider {
       });
 
       return {
-        data: applyHardCap(
+        data: capLocalResponse(
           shedLocalProjectContext(transformProjectContext(readModel, data)).data,
         ),
         _freshness: readModel.freshness,
@@ -153,7 +155,7 @@ export class LocalReadProvider implements ReadProvider {
         };
 
         return {
-          data: applyHardCap(shedLocalFeatureContext(data).data),
+          data: capLocalResponse(shedLocalFeatureContext(data).data),
           _freshness: readModel.freshness,
         };
       },
@@ -174,7 +176,7 @@ export class LocalReadProvider implements ReadProvider {
         if (!input.featureSlug) {
           const data = core.getDecisionLog(readModel, { limit });
           return {
-            data: applyHardCap(data.decisions.map(transformDecisionLogDecision)),
+            data: capLocalResponse(data.decisions.map(transformDecisionLogDecision)),
             _freshness: readModel.freshness,
           };
         }
@@ -185,16 +187,16 @@ export class LocalReadProvider implements ReadProvider {
         );
         if (!feature) {
           return {
-            data: {
+            data: capLocalResponse({
               decisions: [],
-              _note: `Feature "${input.featureSlug}" was not found in the local root.`,
-            },
+              _note: `Feature "${boundEcho(input.featureSlug)}" was not found in the local root.`,
+            }),
             _freshness: readModel.freshness,
           };
         }
 
         return {
-          data: applyHardCap({
+          data: capLocalResponse({
             decisions: findDomainDecisions(readModel, feature)
               .slice(0, limit)
               .map(transformDecisionLogDecision),
@@ -216,7 +218,7 @@ export class LocalReadProvider implements ReadProvider {
       async () => {
         const { readModel } = await this.loadCoreModel();
         return {
-          data: applyHardCap(getLocalConflictsUnavailableData()),
+          data: capLocalResponse(getLocalConflictsUnavailableData()),
           _freshness: readModel.freshness,
         };
       },
@@ -230,7 +232,7 @@ export class LocalReadProvider implements ReadProvider {
       const data = core.getFileContext(readModel, input.filepath);
 
       return {
-        data: applyHardCap({
+        data: capLocalResponse({
           ...data,
           owners: data.owners.map((owner: any) => ({
             ...owner,
@@ -254,7 +256,7 @@ export class LocalReadProvider implements ReadProvider {
       async () => {
         const { readModel } = await this.loadCoreModel();
         return {
-          data: applyHardCap(getLocalProposalsUnavailableData()),
+          data: capLocalResponse(getLocalProposalsUnavailableData()),
           _freshness: readModel.freshness,
         };
       },
@@ -414,6 +416,12 @@ function findDomainDecisions(readModel: any, feature: any): any[] {
   return (Array.isArray(readModel.decisions) ? readModel.decisions : []).filter(
     (decision: any) => decisionBelongsToFeatureDomain(decision, feature),
   );
+}
+
+// Every Local response passes the hosted hard cap, with its notes serialized
+// first so the capped preview still carries them (D-385).
+function capLocalResponse(data: unknown): unknown {
+  return applyHardCap(notesFirst(data));
 }
 
 function decisionScopeNote(feature: any, featureSlug: string): string {

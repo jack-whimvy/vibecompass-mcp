@@ -75,6 +75,31 @@ export function applyHardCap(data: unknown): unknown {
   return data;
 }
 
+/**
+ * Move top-level note keys (`_`-prefixed) ahead of the payload. The hard cap
+ * keeps only the first 10,000 characters, so a qualification serialized after
+ * a large list would be cut from the preview.
+ */
+export function notesFirst(data: unknown): unknown {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return data;
+  }
+
+  const entries = Object.entries(data);
+  return Object.fromEntries([
+    ...entries.filter(([key]) => key.startsWith('_')),
+    ...entries.filter(([key]) => !key.startsWith('_')),
+  ]);
+}
+
+/**
+ * Shorten caller input echoed into a note, so an oversized argument cannot
+ * crowd the note out of the budget.
+ */
+export function boundEcho(value: string, maxChars = 200): string {
+  return value.length > maxChars ? `${value.slice(0, maxChars)}…` : value;
+}
+
 export function clampDecisionLimit(limit: number): number {
   return Math.min(
     Math.max(1, Number.isFinite(limit) ? Math.trunc(limit) : 20),

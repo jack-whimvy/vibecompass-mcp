@@ -3,6 +3,8 @@ import test from 'node:test';
 import {
   HARD_CAP_NOTE,
   applyHardCap,
+  boundEcho,
+  notesFirst,
   clampDecisionLimit,
   estimateTokens,
   shedToBudget,
@@ -18,6 +20,8 @@ import {
 // vibecompass-app 61f04cc (src/lib/mcp/response.ts mcpJson/estimateTokens,
 // src/app/api/mcp/context/route.ts, src/app/api/mcp/features/[slug]/route.ts).
 // The notes are copied as literals so a drift in budget.ts fails these tests.
+// The port covers the shaping operations, not the routes' whole assembly: the
+// fixtures model no null session, unassigned features, or open conflicts.
 // ---------------------------------------------------------------------------
 
 function hostedEstimateTokens(data: unknown): number {
@@ -349,6 +353,18 @@ test('shedding stops once data fits and never mutates its input', () => {
   assert.deepEqual(result.shed, ['drop-list']);
   assert.equal(result.data.keep, true);
   assert.equal(JSON.stringify(input), frozen);
+});
+
+test('notes move ahead of the payload and echoed input is bounded', () => {
+  assert.deepEqual(
+    Object.keys(notesFirst({ freshness: 'f', feature: {}, _decisions_note: 'a', decisions: [], _note: 'b' }) as object),
+    ['_decisions_note', '_note', 'freshness', 'feature', 'decisions'],
+  );
+  const rows = [{ _x: 1 }];
+  assert.equal(notesFirst(rows), rows);
+  assert.equal(notesFirst(null), null);
+  assert.equal(boundEcho('short'), 'short');
+  assert.equal(boundEcho('y'.repeat(201)), `${'y'.repeat(200)}…`);
 });
 
 test('decision-log limits clamp the way hosted parses them', () => {
@@ -813,6 +829,19 @@ test('get_feature_context: over the hard cap after every tier returns the capped
   assert.equal(data._truncated, true);
   assert.equal(data._note, HARD_CAP_NOTE);
   assert.equal((data._data_preview as string).length, 10_000);
+
+  // The qualifications are serialized first, so the preview keeps them all
+  // (review R1): the decision scope, the conflicts note, and the shed notes.
+  const preview = data._data_preview as string;
+  assert.ok(preview.startsWith('{"_decisions_note":'));
+  for (const note of [
+    'Results are scoped to the "platform" decision file for feature "platform--parity"; decisions in other files, such as cross-cutting ones, are not included.',
+    'Hosted collaboration conflicts are unavailable in Local mode without VIBECOMPASS_API_KEY.',
+    "read each component's doc (its path, under VIBECOMPASS_ROOT) for them.",
+    'Truncated to fit token budget — use get_file_context() for file mappings',
+  ]) {
+    assert.ok(preview.includes(jsonEscaped(note)), note);
+  }
 });
 
 test('get_decision_log: unchanged at 2,500 tokens, capped one character over', async () => {
@@ -832,8 +861,26 @@ test('get_decision_log with a feature: unchanged at 2,500 tokens, capped one cha
   );
 
   assert.equal(estimateTokens(at), 2500);
-  assert.match((at as { _note: string })._note, /does not yet store feature-level decision links/);
-  assert.equal((over as Record<string, unknown>)._truncated, true);
+  const scopeNote = (at as { _note: string })._note;
+  assert.match(scopeNote, /does not yet store feature-level decision links/);
+
+  // Capped, the preview still opens with the full scope note (review R1).
+  const capped = over as Record<string, unknown>;
+  assert.equal(capped._truncated, true);
+  assert.ok(
+    (capped._data_preview as string).startsWith(`{"_note":"${jsonEscaped(scopeNote)}"`),
+  );
+});
+
+test('get_decision_log with an oversized unknown slug stays a short D-181 note under the cap', async () => {
+  const slug = 'x'.repeat(20_000);
+  const response = await fakeProvider(BASE_ROOT).getDecisionLog({ limit: 20, featureSlug: slug });
+  const data = response.data as { decisions: unknown[]; _note: string };
+
+  assert.deepEqual(data.decisions, []);
+  assert.equal(data._note, `Feature "${'x'.repeat(200)}…" was not found in the local root.`);
+  assert.ok(estimateTokens(data) < 100);
+  assert.equal(response._stale, undefined);
 });
 
 test('get_decision_log with a feature reads every decision in the domain file', async () => {
@@ -886,6 +933,10 @@ test('get_feature_context in Hybrid points to get_conflicts for hosted conflicts
   assert.deepEqual(data.conflicts, []);
   assert.match(data._conflicts_note, /Call get_conflicts\(\)/);
 });
+
+function jsonEscaped(value: string): string {
+  return JSON.stringify(value).slice(1, -1);
+}
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

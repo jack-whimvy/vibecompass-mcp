@@ -5,8 +5,9 @@
 - Local token budgets match hosted (D-053, D-385). `get_project_context` and
   `get_feature_context` shed to a 2,000-token budget in hosted's tier order,
   and every Local read response passes the 2,500-token hard cap, which returns
-  `{ _truncated, _note, _data_preview }` like hosted. Before this, Local
-  responses had no budget. One Local-only tier sheds component details, next
+  `{ _truncated, _note, _data_preview }` like hosted. Local responses put
+  their notes first, so a capped preview still carries them. Before this,
+  Local responses had no budget. One Local-only tier sheds component details, next
   steps, retrieval guidance, and warning lists right after decision
   descriptions, with a note to read the component's doc.
 - Local `get_project_context` lists hosted's 5 recent decisions, as id and
