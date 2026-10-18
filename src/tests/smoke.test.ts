@@ -1,16 +1,40 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { VibeCompassClient } from '../api-client.js';
 import { formatError, formatResponse } from '../format.js';
 import { HostedReadProvider } from '../providers/hosted-read.js';
 import { LocalReadProvider } from '../providers/local-read.js';
 import type { ReadProvider } from '../read-provider.js';
+import {
+  PACKAGE_VERSION,
+  createServer,
+  resolveServerMode,
+  serverInstructions,
+  type ServerConfig,
+} from '../server.js';
 import { registerReadTools } from '../tools/read.js';
 import { registerWriteTools } from '../tools/write.js';
+
+const READ_TOOLS = [
+  'get_conflicts',
+  'get_decision_log',
+  'get_feature_context',
+  'get_file_context',
+  'get_project_context',
+  'list_pending_proposals',
+];
+const WRITE_TOOLS = [
+  'add_session_summary',
+  'flag_conflict',
+  'log_decision',
+  'update_feature_status',
+];
 
 interface RegisteredTool {
   config: unknown;
@@ -297,19 +321,10 @@ test('read and write tool registries expose the expected tool surface', async ()
 
   assert.deepEqual(
     [...tools.keys()].sort(),
-    [
-      'add_session_summary',
-      'flag_conflict',
-      'get_conflicts',
-      'get_decision_log',
-      'get_feature_context',
-      'get_file_context',
-      'get_project_context',
-      'list_pending_proposals',
-      'log_decision',
-      'update_feature_status',
-    ].sort(),
+    [...READ_TOOLS, ...WRITE_TOOLS].sort(),
   );
+  // Brief delivery stays gated (D-368, D-385).
+  assert.equal(tools.has('get_brief'), false);
 
   await tools.get('get_file_context')?.handler({ filepath: 'src/lib/auth.ts' });
   await tools.get('list_pending_proposals')?.handler({ status: 'open' });
@@ -349,6 +364,64 @@ test('read and write tool registries expose the expected tool surface', async ()
       },
     },
   ]);
+});
+
+async function connectClient(config: ServerConfig) {
+  const { server, mode } = createServer(config);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'vibecompass-test', version: '0.0.0' });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  return { client, server, mode };
+}
+
+test('each mode serves its tool surface, the package version, and its instructions over MCP', async () => {
+  const manifest = JSON.parse(
+    await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+  ) as { version: string };
+  const cases: Array<{ config: ServerConfig; mode: string; tools: string[] }> = [
+    { config: { rootDir: '/virtual/root' }, mode: 'local', tools: READ_TOOLS },
+    { config: { apiKey: 'test-key' }, mode: 'hosted', tools: [...READ_TOOLS, ...WRITE_TOOLS] },
+    {
+      config: { rootDir: '/virtual/root', apiKey: 'test-key' },
+      mode: 'hybrid',
+      tools: [...READ_TOOLS, ...WRITE_TOOLS],
+    },
+  ];
+
+  assert.equal(PACKAGE_VERSION, manifest.version);
+
+  for (const { config, mode, tools } of cases) {
+    const { client, server, mode: resolved } = await connectClient(config);
+    try {
+      assert.equal(resolved, mode);
+      const listed = (await client.listTools()).tools.map((tool) => tool.name).sort();
+      assert.deepEqual(listed, [...tools].sort(), mode);
+      assert.equal(listed.includes('get_brief'), false);
+
+      assert.deepEqual(client.getServerVersion(), {
+        name: 'vibecompass',
+        version: manifest.version,
+      });
+
+      const instructions = client.getInstructions() ?? '';
+      assert.equal(instructions, serverInstructions(resolved));
+      assert.match(instructions, /source of truth/);
+      assert.doesNotMatch(instructions, /brief/i);
+      for (const tool of instructions.match(/\b[a-z]+(?:_[a-z]+)+\b/g) ?? []) {
+        assert.ok(listed.includes(tool), `${mode} instructions name ${tool}`);
+      }
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  }
+
+  assert.match(serverInstructions('local'), /local project-memory files at VIBECOMPASS_ROOT/);
+  assert.match(serverInstructions('hybrid'), /writes never change the local files/);
+  assert.match(serverInstructions('hosted'), /hosted VibeCompass project/);
+  assert.equal(resolveServerMode({}), null);
+  assert.throws(() => createServer({}), /VIBECOMPASS_API_KEY/);
 });
 
 test('local read provider serves project and file context from the local root', async () => {
@@ -489,6 +562,31 @@ test('local read provider serves project and file context from the local root', 
       ).feature.components[0].component_key,
       'read-tools',
     );
+    const featurePayload = featureContext.data as {
+      decisions: Array<Record<string, unknown>>;
+      _decisions_note: string;
+      conflicts: unknown[];
+      _conflicts_note: string;
+    };
+    // Domain-file decisions only: D-159 lives in cross-cutting.md.
+    assert.deepEqual(
+      featurePayload.decisions.map((decision) => decision.decisionNumber),
+      [180],
+    );
+    assertHostedDecisionRowShape(featurePayload.decisions[0]);
+    assert.match(
+      featurePayload._decisions_note,
+      /Results are scoped to the "mcp-server" decision file for feature "mcp-server--context-delivery"; decisions in other files, such as cross-cutting ones, are not included\./,
+    );
+    assert.deepEqual(featurePayload.conflicts, []);
+    assert.match(featurePayload._conflicts_note, /unavailable in Local mode/);
+    assert.deepEqual(
+      (projectContext.data as { recent_decisions: unknown[] }).recent_decisions,
+      [
+        { decision_id: 180, title: 'Hybrid MCP conflict reads prefer hosted conflict metadata' },
+        { decision_id: 159, title: 'Local file-backed query logic lives in vibecompass' },
+      ],
+    );
     assert.equal(
       (decisionLog.data as Array<{ decisionNumber: number }>)[0].decisionNumber,
       180,
@@ -627,6 +725,8 @@ test('local and hosted read providers assert decision and conflict fixture contr
                 feature_slug: 'context-delivery',
               },
             ],
+            // A feature filter reads the whole decision list, not a window.
+            decisions: localDecisionFixture,
           };
         },
         getProjectContext() {

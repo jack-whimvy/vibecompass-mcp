@@ -200,6 +200,9 @@ Read tools work in hosted mode or local mode:
 - `get_decision_log`
 - `get_conflicts`
 - `get_file_context`
+- `list_pending_proposals` — hosted proposal summaries, read-only. In local
+  mode it returns an empty list with a note, because proposals live in the
+  hosted project.
 
 Write tools require `VIBECOMPASS_API_KEY` and are disabled in pure local mode:
 
@@ -207,3 +210,22 @@ Write tools require `VIBECOMPASS_API_KEY` and are disabled in pure local mode:
 - `update_feature_status`
 - `flag_conflict`
 - `add_session_summary`
+
+### Response budgets
+
+Every mode keeps read responses small enough for a model's context.
+`get_project_context` and `get_feature_context` drop their least important
+detail first to fit about 2,000 tokens. Any read response still over about
+2,500 tokens comes back as a preview with a `_note` pointing to narrower tools,
+such as `get_feature_context` with a `component_slug`. In local mode, when a
+feature's component details are dropped, the note says to read each
+component's doc, whose path the response gives.
+
+In local mode, decisions are filtered by the feature's domain decision file
+(for example `decisions/mcp-server.md`), because decision entries don't record
+which feature they belong to. Responses say so in a note.
+
+### Server instructions
+
+The server tells the client what the tools are for and where the project's
+source of truth is: the local project-memory files in local and hybrid mode.

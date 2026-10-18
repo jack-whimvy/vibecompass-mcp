@@ -4,6 +4,20 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ApiResponse, VibeCompassClient } from '../api-client.js';
+import {
+  CONTEXT_DECISIONS_SHED_NOTE,
+  CONTEXT_TOKEN_BUDGET,
+  DESCRIPTION_TRIM_CHARS,
+  FEATURE_DECISION_LIMIT,
+  FEATURE_FILES_SHED_NOTE,
+  FEATURE_TOKEN_BUDGET,
+  RECENT_DECISION_LIMIT,
+  appendNote,
+  applyHardCap,
+  clampDecisionLimit,
+  shedToBudget,
+  type SheddingTier,
+} from '../budget.js';
 import type { ReadProvider } from '../read-provider.js';
 
 const TIMEOUT_MS = 5_000;
@@ -14,9 +28,21 @@ const NON_CANONICAL_SESSION_FILES = new Set(['wip.md', 'handoff.md']);
 const NON_CANONICAL_ARCHITECTURE_FILES = new Set(['README.md']);
 const LOCAL_CONFLICTS_UNAVAILABLE_NOTE =
   'Hosted collaboration conflicts are unavailable in Local mode without VIBECOMPASS_API_KEY. This response does not indicate that local files were checked for hosted conflict records.';
+const HYBRID_FEATURE_CONFLICTS_NOTE =
+  'Hosted conflicts are not matched to local features. Call get_conflicts() for the hosted project\'s open conflicts.';
 const LOCAL_PROPOSALS_UNAVAILABLE_NOTE =
   'Hosted proposals are unavailable in Local mode without VIBECOMPASS_API_KEY. Local project-memory files remain authoritative; use the package sync flow when hosted proposals are available.';
+const LOCAL_COMPONENT_TEXT_SHED_NOTE =
+  'Component details, next steps, retrieval guidance, and warning lists were omitted to fit the token budget; read each component\'s doc (its path, under VIBECOMPASS_ROOT) for them.';
+const LOCAL_COMPONENT_TEXT_FIELDS = new Set([
+  'details',
+  'next_steps',
+  'retrieval_guidance',
+  'retrieval_scope',
+  'warnings',
+]);
 const HOSTED_DECISION_SOURCES = new Set(['mcp', 'scan', 'manual', 'pipeline']);
+const RECENT_SESSION_LIMIT = 5;
 
 interface CacheEntry {
   data: unknown;
@@ -67,12 +93,14 @@ export class LocalReadProvider implements ReadProvider {
     return this.withResilience('get_project_context', async () => {
       const { core, readModel } = await this.loadCoreModel();
       const data = core.getProjectContext(readModel, {
-        decisionLimit: 20,
-        sessionLimit: 5,
+        decisionLimit: RECENT_DECISION_LIMIT,
+        sessionLimit: RECENT_SESSION_LIMIT,
       });
 
       return {
-        data: transformProjectContext(readModel, data),
+        data: applyHardCap(
+          shedLocalProjectContext(transformProjectContext(readModel, data)).data,
+        ),
         _freshness: readModel.freshness,
       };
     });
@@ -101,18 +129,31 @@ export class LocalReadProvider implements ReadProvider {
           featureKey: feature.feature_key,
         });
 
-        const transformed = result
-          ? {
-              ...result,
-              feature: transformFeature(
-                result.feature,
-                input.componentSlug,
-              ),
-            }
-          : null;
+        if (!result) {
+          return {
+            data: null,
+            _freshness: readModel.freshness,
+          };
+        }
+
+        // Hosted returns the feature's decisions and open conflicts alongside
+        // it. Local decisions come from the feature's domain decision file,
+        // and conflicts are hosted collaboration metadata (D-179, D-385).
+        const data = {
+          ...result,
+          feature: transformFeature(result.feature, input.componentSlug),
+          decisions: findDomainDecisions(readModel, feature)
+            .slice(0, FEATURE_DECISION_LIMIT)
+            .map(transformDecisionLogDecision),
+          _decisions_note: decisionScopeNote(feature, input.featureSlug),
+          conflicts: [],
+          _conflicts_note: this.hostedClient
+            ? HYBRID_FEATURE_CONFLICTS_NOTE
+            : LOCAL_CONFLICTS_UNAVAILABLE_NOTE,
+        };
 
         return {
-          data: transformed,
+          data: applyHardCap(shedLocalFeatureContext(data).data),
           _freshness: readModel.freshness,
         };
       },
@@ -123,19 +164,26 @@ export class LocalReadProvider implements ReadProvider {
     limit: number;
     featureSlug?: string;
   }): Promise<ApiResponse> {
+    const limit = clampDecisionLimit(input.limit);
+
     return this.withResilience(
-      `get_decision_log:${input.limit}:${input.featureSlug ?? ''}`,
+      `get_decision_log:${limit}:${input.featureSlug ?? ''}`,
       async () => {
         const { core, readModel } = await this.loadCoreModel();
-        const feature = input.featureSlug
-          ? findFeatureByExternalSlug(readModel.features, input.featureSlug)
-          : null;
-        // Local decisions are grouped by canonical decision file, so filtered reads
-        // inspect a wider raw window before narrowing to the feature's domain file.
-        const data = core.getDecisionLog(readModel, {
-          limit: input.featureSlug ? 100 : input.limit,
-        });
-        if (input.featureSlug && !feature) {
+
+        if (!input.featureSlug) {
+          const data = core.getDecisionLog(readModel, { limit });
+          return {
+            data: applyHardCap(data.decisions.map(transformDecisionLogDecision)),
+            _freshness: readModel.freshness,
+          };
+        }
+
+        const feature = findFeatureByExternalSlug(
+          readModel.features,
+          input.featureSlug,
+        );
+        if (!feature) {
           return {
             data: {
               decisions: [],
@@ -145,24 +193,13 @@ export class LocalReadProvider implements ReadProvider {
           };
         }
 
-        const decisions =
-          input.featureSlug && feature
-            ? data.decisions
-                .filter((decision: any) =>
-                  decisionBelongsToFeatureDomain(decision, feature),
-                )
-                .slice(0, input.limit)
-            : data.decisions;
-        const transformed = decisions.map(transformDecisionLogDecision);
-
         return {
-          data:
-            input.featureSlug && feature
-              ? {
-                  decisions: transformed,
-                  _note: `Local mode does not yet store feature-level decision links. Results are scoped to the "${feature.domain_key}" decision file for feature "${input.featureSlug}".`,
-                }
-              : transformed,
+          data: applyHardCap({
+            decisions: findDomainDecisions(readModel, feature)
+              .slice(0, limit)
+              .map(transformDecisionLogDecision),
+            _note: decisionScopeNote(feature, input.featureSlug),
+          }),
           _freshness: readModel.freshness,
         };
       },
@@ -179,7 +216,7 @@ export class LocalReadProvider implements ReadProvider {
       async () => {
         const { readModel } = await this.loadCoreModel();
         return {
-          data: getLocalConflictsUnavailableData(),
+          data: applyHardCap(getLocalConflictsUnavailableData()),
           _freshness: readModel.freshness,
         };
       },
@@ -193,13 +230,13 @@ export class LocalReadProvider implements ReadProvider {
       const data = core.getFileContext(readModel, input.filepath);
 
       return {
-        data: {
+        data: applyHardCap({
           ...data,
           owners: data.owners.map((owner: any) => ({
             ...owner,
             feature_slug: toExternalFeatureSlug(owner),
           })),
-        },
+        }),
         _freshness: readModel.freshness,
       };
     });
@@ -217,7 +254,7 @@ export class LocalReadProvider implements ReadProvider {
       async () => {
         const { readModel } = await this.loadCoreModel();
         return {
-          data: getLocalProposalsUnavailableData(),
+          data: applyHardCap(getLocalProposalsUnavailableData()),
           _freshness: readModel.freshness,
         };
       },
@@ -371,6 +408,18 @@ function decisionBelongsToFeatureDomain(decision: any, feature: any): boolean {
   return decision.domain_file === feature.domain_key;
 }
 
+// The whole decision list, newest first, so older domain files are not crowded
+// out by newer decisions in other files.
+function findDomainDecisions(readModel: any, feature: any): any[] {
+  return (Array.isArray(readModel.decisions) ? readModel.decisions : []).filter(
+    (decision: any) => decisionBelongsToFeatureDomain(decision, feature),
+  );
+}
+
+function decisionScopeNote(feature: any, featureSlug: string): string {
+  return `Local mode does not yet store feature-level decision links. Results are scoped to the "${feature.domain_key}" decision file for feature "${featureSlug}"; decisions in other files, such as cross-cutting ones, are not included.`;
+}
+
 function transformDecisionLogDecision(decision: any) {
   const row: Record<string, unknown> = {
     decisionNumber: decision.decision_id,
@@ -460,7 +509,141 @@ function transformProjectContext(readModel: any, data: any) {
           slugByFeatureKey.get(feature.feature_key) ?? feature.feature_slug,
       })),
     })),
+    // Hosted lists recent decisions by number and title only; the text is
+    // one get_decision_log call away.
+    recent_decisions: (data.recent_decisions ?? []).map((decision: any) => ({
+      decision_id: decision.decision_id,
+      title: decision.title,
+    })),
   };
+}
+
+// Hosted context tiers, in order (app src/app/api/mcp/context/route.ts):
+// session detail, recent decisions, feature names.
+const LOCAL_PROJECT_CONTEXT_TIERS: Array<SheddingTier<Record<string, any>>> = [
+  {
+    name: 'session-detail',
+    apply: (data) => ({
+      ...data,
+      recent_sessions: (data.recent_sessions ?? [])
+        .slice(0, 1)
+        .map((session: any) => ({
+          title: session.title,
+          session_date: session.session_date,
+          session_number: session.session_number,
+        })),
+    }),
+  },
+  {
+    name: 'recent-decisions',
+    apply: (data) => ({
+      ...data,
+      recent_decisions: [],
+      _note: CONTEXT_DECISIONS_SHED_NOTE,
+    }),
+  },
+  {
+    name: 'feature-names',
+    apply: (data) => ({
+      ...data,
+      domains: (data.domains ?? []).map((domain: any) => ({
+        ...domain,
+        features: domain.features.map((feature: any) => ({
+          s: feature.feature_slug,
+          st: feature.overall_status,
+        })),
+      })),
+    }),
+  },
+];
+
+// Hosted feature tiers, in order (app src/app/api/mcp/features/[slug]/route.ts):
+// decision descriptions, component files, feature files, then decisions and
+// long descriptions. The one Local-only tier sheds component text hosted never
+// returns, so the fields both modes share still shed in hosted's order (D-385).
+const LOCAL_FEATURE_CONTEXT_TIERS: Array<SheddingTier<Record<string, any>>> = [
+  {
+    name: 'decision-descriptions',
+    apply: (data) => ({
+      ...data,
+      decisions: (data.decisions ?? []).map((decision: any) => ({
+        number: decision.decisionNumber,
+        title: decision.title,
+      })),
+    }),
+  },
+  {
+    name: 'component-text',
+    apply: (data) => ({
+      ...data,
+      feature: {
+        ...omitKeys(data.feature, ['warnings']),
+        components: data.feature.components.map((component: any) =>
+          omitKeys(component, LOCAL_COMPONENT_TEXT_FIELDS),
+        ),
+      },
+      _note: appendNote(data._note, LOCAL_COMPONENT_TEXT_SHED_NOTE),
+    }),
+  },
+  {
+    name: 'component-files',
+    apply: (data) => ({
+      ...data,
+      feature: {
+        ...data.feature,
+        components: data.feature.components.map((component: any) =>
+          omitKeys(component, ['involved_files']),
+        ),
+      },
+    }),
+  },
+  {
+    name: 'feature-files',
+    apply: (data) => ({
+      ...data,
+      feature: { ...data.feature, involved_files: [] },
+      _note: appendNote(data._note, FEATURE_FILES_SHED_NOTE),
+    }),
+  },
+  {
+    name: 'decisions-and-descriptions',
+    apply: (data) => ({
+      ...data,
+      decisions: [],
+      feature: {
+        ...data.feature,
+        components: data.feature.components.map((component: any) => ({
+          ...component,
+          description: trimDescription(component.description),
+        })),
+      },
+    }),
+  },
+];
+
+export function shedLocalProjectContext(data: Record<string, any>) {
+  return shedToBudget(data, CONTEXT_TOKEN_BUDGET, LOCAL_PROJECT_CONTEXT_TIERS);
+}
+
+export function shedLocalFeatureContext(data: Record<string, any>) {
+  return shedToBudget(data, FEATURE_TOKEN_BUDGET, LOCAL_FEATURE_CONTEXT_TIERS);
+}
+
+function trimDescription(description: unknown): unknown {
+  return typeof description === 'string' &&
+    description.length > DESCRIPTION_TRIM_CHARS
+    ? `${description.slice(0, DESCRIPTION_TRIM_CHARS)}... (truncated)`
+    : description;
+}
+
+function omitKeys(
+  entity: Record<string, any>,
+  keys: Iterable<string>,
+): Record<string, any> {
+  const omitted = new Set(keys);
+  return Object.fromEntries(
+    Object.entries(entity).filter(([key]) => !omitted.has(key)),
+  );
 }
 
 function transformFeature(feature: any, componentSlug?: string) {
