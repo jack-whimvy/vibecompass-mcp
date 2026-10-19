@@ -322,6 +322,16 @@ test('get_brief never infers a lane; an explicit lane_id matches `brief --sessio
   const cliSingle = await cliBrief(single, ['--task', MATCHING_TASK]);
   assert.equal(cliSingle.lane_source, 'single-lane');
   assert.ok(cliSingle.units.some((unit: { kind: string }) => unit.kind === 'lane'));
+
+  // A lane that is not active gets the engine's disclosed incomplete brief
+  // (the CLI's --session refuses it); a reserved id is an error.
+  const { client } = await connect(t, { rootDir: single.rootDir });
+  const unknown = JSON.parse(texts(await callBrief(client, { task: MATCHING_TASK, lane_id: 'no-such-lane' }))[1]);
+  assert.equal(unknown.status, 'incomplete');
+  assert.match(unknown.status_reason, /lane "no-such-lane" could not be read/);
+  const reserved = await callBrief(client, { task: MATCHING_TASK, lane_id: 'current' });
+  assert.equal(reserved.isError, true);
+  assert.match(texts(reserved)[0], /reserved/);
 });
 
 test('every brief carries the starting-point note and its status, a no-match brief included (D-386)', async (t) => {
