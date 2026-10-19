@@ -1,13 +1,13 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import type { BriefResponse } from '../providers/brief-build.js';
 import {
   BRIEF_DISABLED_NOTE,
   BRIEF_FAILED_NOTE,
   BRIEF_MAX_BUDGET,
   BRIEF_MIN_BUDGET,
   type BriefProvider,
-  type BriefResponse,
 } from '../providers/local-brief.js';
 
 // Input bounds keep the echoed inputs from crowding the metadata block's

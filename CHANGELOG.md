@@ -17,6 +17,9 @@
   the JSON metadata passes the cap. A call that fails or takes more than 5
   seconds returns an error with no brief. A brief is never served from a
   cache, so it can't carry text the root now excludes.
+- Each call builds in its own worker thread, which the server terminates at
+  the 5-second limit. The limit holds while the engine computes, and the
+  other tools keep answering meanwhile.
 - The server instructions are unchanged and never mention `get_brief`. Its
   description calls the brief a starting point, not the whole context.
 - The lockfile resolves `@modelcontextprotocol/sdk` 1.32.1 (was 1.28.0),

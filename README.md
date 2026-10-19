@@ -242,6 +242,8 @@ returns a note and builds nothing.
   on.
 - It never serves an old brief: if a build fails or takes over 5 seconds, the
   call returns an error with no brief.
+- Each call builds in its own worker thread. The server stops the build at
+  5 seconds and keeps answering other tool calls while it runs.
 
 ### Response budgets
 

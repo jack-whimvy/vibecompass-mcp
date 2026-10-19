@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import test, { type TestContext } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -13,14 +16,12 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { buildSessionBrief, renderBrief } from '@vibecompass/vibecompass';
 import { HARD_CAP_NOTE } from '../budget.js';
 import {
-  BRIEF_DISABLED_NOTE,
   BRIEF_PROJECTION,
   BRIEF_PROJECTION_NOTE,
   BRIEF_STARTING_POINT_NOTE,
-  LocalBriefProvider,
   projectBrief,
-  type BriefCoreModule,
-} from '../providers/local-brief.js';
+} from '../providers/brief-build.js';
+import { BRIEF_DISABLED_NOTE, LocalBriefProvider } from '../providers/local-brief.js';
 import { createServer, serverInstructions, type ServerConfig } from '../server.js';
 import { GET_BRIEF_DESCRIPTION, formatBriefResponse } from '../tools/brief.js';
 
@@ -170,6 +171,71 @@ function engineResult(cliJson: Record<string, any>): Record<string, any> {
   return result;
 }
 
+/** A fake core module on disk. A brief worker imports core by specifier, so a fake is a file. */
+async function writeFakeCore(t: TestContext, source: string): Promise<string> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'vibecompass-mcp-fake-core-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'core.mjs');
+  await writeFile(file, source);
+  return pathToFileURL(file).href;
+}
+
+interface FakeControl {
+  behavior: 'ok' | 'hang' | 'throw' | 'settings-throw' | 'spin';
+  settings: { enabled: boolean; exclude: string[]; problems: string[] };
+  spinMs?: number;
+}
+
+// Each call runs in a new worker, so this fake reads its behavior from the
+// root's control.json, counts builds in builds.log, and marks a spin that
+// ran to its end with a `spun` file. A hang keeps a timer alive, so only
+// the deadline ends it.
+const SCRIPTED_CORE = `
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const control = (rootDir) => JSON.parse(readFileSync(join(rootDir, 'control.json'), 'utf8'));
+export async function readBriefSettingsForRoot(rootDir) {
+  const { behavior, settings } = control(rootDir);
+  if (behavior === 'settings-throw') throw new Error('settings unreadable');
+  return settings;
+}
+export async function buildSessionBrief({ rootDir }) {
+  appendFileSync(join(rootDir, 'builds.log'), 'build\\n');
+  const { behavior, spinMs } = control(rootDir);
+  if (behavior === 'hang') return new Promise(() => setInterval(() => {}, 1000));
+  if (behavior === 'throw') throw new Error('engine failed');
+  if (behavior === 'spin') {
+    const until = Date.now() + spinMs;
+    while (Date.now() < until) {}
+    writeFileSync(join(rootDir, 'spun'), '');
+  }
+  return {
+    contract_version: 2,
+    status: 'complete',
+    units: [{ id: 'doc:private.md', kind: 'doc', tier: 'core', estimated_tokens: 12, excerpt: 'PRIVATE-TEXT' }],
+    omitted: [],
+  };
+}
+export function renderBrief(result) {
+  return '# Brief\\n' + result.units.map((unit) => unit.excerpt).join('\\n') + '\\n';
+}
+`;
+const FAKE_ENABLED = { enabled: true, exclude: [] as string[], problems: [] as string[] };
+
+async function scriptedCore(t: TestContext) {
+  const rootDir = await mkdtemp(path.join(os.tmpdir(), 'vibecompass-mcp-scripted-root-'));
+  t.after(() => rm(rootDir, { recursive: true, force: true }));
+  return {
+    rootDir,
+    coreModule: await writeFakeCore(t, SCRIPTED_CORE),
+    control: (control: FakeControl) => writeFile(path.join(rootDir, 'control.json'), JSON.stringify(control)),
+    builds: async () => {
+      const log = await readFile(path.join(rootDir, 'builds.log'), 'utf8').catch(() => '');
+      return log.split('\n').filter(Boolean).length;
+    },
+  };
+}
+
 async function snapshotTree(dir: string): Promise<Record<string, string>> {
   const snapshot: Record<string, string> = {};
   for (const entry of await readdir(dir, { recursive: true, withFileTypes: true })) {
@@ -217,27 +283,24 @@ test('get_brief is registered only on a local root that opts in, and the instruc
   }
 });
 
-test('the server-start settings check fails closed without touching the other tools (D-386)', async () => {
-  const failingLoader = new LocalBriefProvider('/virtual/root', {
-    coreModuleLoader: async () => {
-      throw new Error('core missing');
-    },
+test('the server-start settings check fails closed without touching the other tools (D-386)', async (t) => {
+  const missingCore = new LocalBriefProvider('/virtual/root', {
+    coreModule: pathToFileURL(path.join(os.tmpdir(), 'vibecompass-mcp-no-such-core.mjs')).href,
   });
-  assert.equal(await failingLoader.isEnabled(), false);
+  assert.equal(await missingCore.isEnabled(), false);
 
   const olderCore = new LocalBriefProvider('/virtual/root', {
-    coreModuleLoader: async () => ({ buildSessionBrief: async () => ({}), renderBrief: () => '' }),
+    coreModule: await writeFakeCore(
+      t,
+      "export async function buildSessionBrief() { return {}; }\nexport function renderBrief() { return ''; }\n",
+    ),
   });
   assert.equal(await olderCore.isEnabled(), false, 'a core without readBriefSettingsForRoot never opts in');
   const olderCall = await olderCore.getBrief({ task: MATCHING_TASK });
-  assert.equal(olderCall.kind, 'failed');
+  assert.ok(olderCall.kind === 'failed' && /core 0\.17\.5 or later/.test(olderCall.reason));
 
   const hanging = new LocalBriefProvider('/virtual/root', {
-    coreModuleLoader: async () => ({
-      readBriefSettingsForRoot: () => new Promise(() => {}),
-      buildSessionBrief: async () => ({}),
-      renderBrief: () => '',
-    }),
+    coreModule: await writeFakeCore(t, 'export function readBriefSettingsForRoot() { return new Promise(() => {}); }\n'),
     timeoutMs: 20,
   });
   assert.equal(await hanging.isEnabled(), false);
@@ -447,85 +510,64 @@ test('a root that stops opting in builds nothing; enabled with malformed setting
   assert.doesNotMatch(markdown, /read-tools\.md|D-001/, 'no canonical document was read');
 });
 
-test('a failed or timed-out call serves no cached brief, whatever the settings (D-007, D-386; review R1)', async () => {
-  let settings = { enabled: true, exclude: [] as string[], problems: [] as string[] };
-  let behavior: 'ok' | 'hang' | 'throw' | 'settings-throw' = 'ok';
-  let builds = 0;
-  const fakeCore: BriefCoreModule = {
-    async readBriefSettingsForRoot() {
-      if (behavior === 'settings-throw') {
-        throw new Error('settings unreadable');
-      }
-      return settings;
-    },
-    async buildSessionBrief() {
-      builds += 1;
-      if (behavior === 'hang') {
-        return new Promise(() => {});
-      }
-      if (behavior === 'throw') {
-        throw new Error('engine failed');
-      }
-      return {
-        contract_version: 2,
-        status: 'complete',
-        units: [{ id: 'doc:private.md', kind: 'doc', tier: 'core', estimated_tokens: 12, excerpt: 'PRIVATE-TEXT' }],
-        omitted: [],
-      };
-    },
-    renderBrief(result: any) {
-      return `# Brief\n${result.units.map((unit: any) => unit.excerpt).join('\n')}\n`;
-    },
-  };
-  const provider = new LocalBriefProvider('/virtual/root', {
-    coreModuleLoader: async () => fakeCore,
-    timeoutMs: 30,
-  });
+test('a failed or timed-out call serves no cached brief, whatever the settings (D-007, D-386; review R1)', async (t) => {
+  const fake = await scriptedCore(t);
+  const provider = new LocalBriefProvider(fake.rootDir, { coreModule: fake.coreModule, timeoutMs: 750 });
   const request = { task: MATCHING_TASK };
 
-  const scenarios: Array<{ label: string; apply: () => void; kind: 'failed' | 'disabled'; builds: boolean }> = [
-    { label: 'settings unchanged, build times out', apply: () => { behavior = 'hang'; }, kind: 'failed', builds: true },
-    { label: 'settings unchanged, build throws', apply: () => { behavior = 'throw'; }, kind: 'failed', builds: true },
+  const scenarios: Array<{ label: string; control: FakeControl; kind: 'failed' | 'disabled'; builds: boolean }> = [
+    {
+      label: 'settings unchanged, build times out',
+      control: { behavior: 'hang', settings: FAKE_ENABLED },
+      kind: 'failed',
+      builds: true,
+    },
+    {
+      label: 'settings unchanged, build throws',
+      control: { behavior: 'throw', settings: FAKE_ENABLED },
+      kind: 'failed',
+      builds: true,
+    },
     {
       label: 'exclusions changed, build times out',
-      apply: () => {
-        settings = { ...settings, exclude: ['private.md'] };
-        behavior = 'hang';
-      },
+      control: { behavior: 'hang', settings: { ...FAKE_ENABLED, exclude: ['private.md'] } },
       kind: 'failed',
       builds: true,
     },
     {
       label: 'opt-in turned off',
-      apply: () => {
-        settings = { enabled: false, exclude: [], problems: [] };
-      },
+      control: { behavior: 'ok', settings: { enabled: false, exclude: [], problems: [] } },
       kind: 'disabled',
       builds: false,
     },
     {
       label: 'project.yaml unreadable',
-      apply: () => {
-        settings = { enabled: false, exclude: [], problems: ['project.yaml could not be read (EACCES)'] };
+      control: {
+        behavior: 'ok',
+        settings: { enabled: false, exclude: [], problems: ['project.yaml could not be read (EACCES)'] },
       },
       kind: 'disabled',
       builds: false,
     },
-    { label: 'settings read throws', apply: () => { behavior = 'settings-throw'; }, kind: 'failed', builds: false },
+    {
+      label: 'settings read throws',
+      control: { behavior: 'settings-throw', settings: FAKE_ENABLED },
+      kind: 'failed',
+      builds: false,
+    },
   ];
 
   for (const scenario of scenarios) {
-    settings = { enabled: true, exclude: [], problems: [] };
-    behavior = 'ok';
+    await fake.control({ behavior: 'ok', settings: FAKE_ENABLED });
     const primed = await provider.getBrief(request);
     assert.equal(primed.kind, 'brief', scenario.label);
     assert.match(texts(formatBriefResponse(primed)).join('\n'), /PRIVATE-TEXT/);
 
-    scenario.apply();
-    const buildsBefore = builds;
+    await fake.control(scenario.control);
+    const buildsBefore = await fake.builds();
     const response = await provider.getBrief(request);
     assert.equal(response.kind, scenario.kind, scenario.label);
-    assert.equal(builds > buildsBefore, scenario.builds, `${scenario.label}: build attempted`);
+    assert.equal((await fake.builds()) > buildsBefore, scenario.builds, `${scenario.label}: build attempted`);
 
     const formatted = formatBriefResponse(response);
     const text = texts(formatted).join('\n');
@@ -535,6 +577,29 @@ test('a failed or timed-out call serves no cached brief, whatever the settings (
       assert.match(text, /no earlier brief is served from a cache/, scenario.label);
     }
   }
+});
+
+test('the deadline holds while the engine computes synchronously, and the server stays responsive (D-007, D-386; review R3)', async (t) => {
+  const fake = await scriptedCore(t);
+  await fake.control({ behavior: 'spin', spinMs: 1_500, settings: FAKE_ENABLED });
+  const provider = new LocalBriefProvider(fake.rootDir, { coreModule: fake.coreModule, timeoutMs: 300 });
+
+  const started = performance.now();
+  const call = provider.getBrief({ task: MATCHING_TASK });
+  const scheduled = performance.now();
+  await delay(50);
+  const timerLag = performance.now() - scheduled;
+  const response = await call;
+  const elapsed = performance.now() - started;
+
+  assert.ok(timerLag < 250, `the event loop stays free while the brief computes (a 50 ms timer took ${Math.round(timerLag)} ms)`);
+  assert.equal(response.kind, 'failed');
+  assert.match(response.kind === 'failed' ? response.reason : '', /timed out after 300ms/);
+  assert.ok(elapsed < 1_200, `the call answers at its deadline, not when the engine finishes (${Math.round(elapsed)} ms)`);
+
+  // Stopped, not abandoned: well after the spin would have ended, it never finished.
+  await delay(Math.max(0, 2_000 - (performance.now() - started)));
+  assert.equal(existsSync(path.join(fake.rootDir, 'spun')), false, 'the worker was terminated mid-computation');
 });
 
 test('the get_brief description frames a starting point and never asks to be called first (D-386; session 26, S1)', async (t) => {
