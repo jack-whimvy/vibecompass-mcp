@@ -211,9 +211,43 @@ Write tools require `VIBECOMPASS_API_KEY` and are disabled in pure local mode:
 - `flag_conflict`
 - `add_session_summary`
 
+### Session brief (`get_brief`, opt-in)
+
+`get_brief` builds a session brief for a task: excerpts of the architecture
+docs, decisions, and session notes that match it, with a status (complete,
+partial, incomplete, or no-match) and the follow-up reads that didn't fit. It
+is the same brief `vibecompass brief` prints.
+
+It appears only in local and hybrid mode, and only when the root's
+`project.yaml` turns the brief on:
+
+```yaml
+brief:
+  enabled: true
+```
+
+The server checks this when it starts, so restart it after changing the
+setting. If the setting is turned off while the server runs, `get_brief`
+returns a note and builds nothing.
+
+- Inputs: `task` (required), and optionally `files`, `feature_slugs`,
+  `claims`, `lane_id`, and `budget` (800 to 6,000 estimated tokens; default
+  6,000). The tool never picks a session lane for you; pass `lane_id` to
+  include one.
+- Output: the brief as markdown, then its metadata as JSON, with units listed
+  as references. `vibecompass brief --json` with the same inputs gives the
+  full records.
+- Treat the brief as a starting point. Its excerpts are cut, and it can miss
+  the doc a task depends on, so read the full source behind anything you rely
+  on.
+- It never serves an old brief: if a build fails or takes over 5 seconds, the
+  call returns an error with no brief.
+
 ### Response budgets
 
 Every mode keeps read responses small enough for a model's context.
+(`get_brief` is the exception described above: its markdown keeps the brief's
+own budget, and only its JSON metadata follows these limits.)
 `get_project_context` and `get_feature_context` drop their least important
 detail first to fit about 2,000 tokens. Any read response still over about
 2,500 tokens comes back as a preview with a `_note` pointing to narrower tools,
@@ -229,3 +263,5 @@ which feature they belong to. Responses say so in a note.
 
 The server tells the client what the tools are for and where the project's
 source of truth is: the local project-memory files in local and hybrid mode.
+The instructions never mention `get_brief`, so agents aren't steered to call
+it.

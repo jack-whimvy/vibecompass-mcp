@@ -13,4 +13,21 @@ declare module '@vibecompass/vibecompass' {
     options?: { limit?: number },
   ): any;
   export function getFileContext(readModel: any, filepath: string): any;
+  export function readBriefSettingsForRoot(rootDir: string): Promise<{
+    enabled: boolean;
+    enabledDeclared: boolean;
+    exclude: string[];
+    problems: string[];
+    repos: unknown[];
+  }>;
+  export function buildSessionBrief(options: {
+    rootDir: string;
+    task?: string;
+    files?: string[];
+    featureSlugs?: string[];
+    claims?: string[];
+    laneId?: string;
+    budget?: number;
+  }): Promise<any>;
+  export function renderBrief(result: any): string;
 }

@@ -3,7 +3,7 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createServer, resolveServerMode } from './server.js';
 
-function main(): void {
+async function main(): Promise<void> {
   const config = {
     apiKey: process.env.VIBECOMPASS_API_KEY,
     apiUrl: process.env.VIBECOMPASS_API_URL,
@@ -17,7 +17,7 @@ function main(): void {
     process.exit(1);
   }
 
-  const { server, mode } = createServer(config);
+  const { server, mode } = await createServer(config);
 
   if (mode === 'local') {
     process.stderr.write(
@@ -26,10 +26,10 @@ function main(): void {
   }
 
   const transport = new StdioServerTransport();
-  server.connect(transport).catch((error) => {
-    process.stderr.write(`Failed to start MCP server: ${error}\n`);
-    process.exit(1);
-  });
+  await server.connect(transport);
 }
 
-main();
+main().catch((error) => {
+  process.stderr.write(`Failed to start MCP server: ${error}\n`);
+  process.exit(1);
+});

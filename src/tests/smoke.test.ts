@@ -17,6 +17,7 @@ import {
   resolveServerMode,
   serverInstructions,
   type ServerConfig,
+  type ServerMode,
 } from '../server.js';
 import { registerReadTools } from '../tools/read.js';
 import { registerWriteTools } from '../tools/write.js';
@@ -323,7 +324,8 @@ test('read and write tool registries expose the expected tool surface', async ()
     [...tools.keys()].sort(),
     [...READ_TOOLS, ...WRITE_TOOLS].sort(),
   );
-  // Brief delivery stays gated (D-368, D-385).
+  // The read registry never adds get_brief: createServer registers it
+  // separately, and only on a local root that opts in (D-386).
   assert.equal(tools.has('get_brief'), false);
 
   await tools.get('get_file_context')?.handler({ filepath: 'src/lib/auth.ts' });
@@ -367,7 +369,7 @@ test('read and write tool registries expose the expected tool surface', async ()
 });
 
 async function connectClient(config: ServerConfig) {
-  const { server, mode } = createServer(config);
+  const { server, mode } = await createServer(config);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'vibecompass-test', version: '0.0.0' });
   await server.connect(serverTransport);
@@ -375,17 +377,32 @@ async function connectClient(config: ServerConfig) {
   return { client, server, mode };
 }
 
-test('each mode serves its tool surface, the package version, and its instructions over MCP', async () => {
+test('each mode serves its tool surface, the package version, and its instructions over MCP', async (t) => {
   const manifest = JSON.parse(
     await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
   ) as { version: string };
-  const cases: Array<{ config: ServerConfig; mode: string; tools: string[] }> = [
+  // A root that opts into the brief (D-386); '/virtual/root' has no
+  // project.yaml, so it does not.
+  const optedInRoot = await mkdtemp(path.join(os.tmpdir(), 'vibecompass-mcp-brief-on-'));
+  t.after(() => rm(optedInRoot, { recursive: true, force: true }));
+  await writeFile(
+    path.join(optedInRoot, 'project.yaml'),
+    ['format_version: 1', 'name: Brief On', 'brief:', '  enabled: true', ''].join('\n'),
+    'utf8',
+  );
+  const cases: Array<{ config: ServerConfig; mode: ServerMode; tools: string[] }> = [
     { config: { rootDir: '/virtual/root' }, mode: 'local', tools: READ_TOOLS },
     { config: { apiKey: 'test-key' }, mode: 'hosted', tools: [...READ_TOOLS, ...WRITE_TOOLS] },
     {
       config: { rootDir: '/virtual/root', apiKey: 'test-key' },
       mode: 'hybrid',
       tools: [...READ_TOOLS, ...WRITE_TOOLS],
+    },
+    { config: { rootDir: optedInRoot }, mode: 'local', tools: [...READ_TOOLS, 'get_brief'] },
+    {
+      config: { rootDir: optedInRoot, apiKey: 'test-key' },
+      mode: 'hybrid',
+      tools: [...READ_TOOLS, 'get_brief', ...WRITE_TOOLS],
     },
   ];
 
@@ -397,7 +414,8 @@ test('each mode serves its tool surface, the package version, and its instructio
       assert.equal(resolved, mode);
       const listed = (await client.listTools()).tools.map((tool) => tool.name).sort();
       assert.deepEqual(listed, [...tools].sort(), mode);
-      assert.equal(listed.includes('get_brief'), false);
+      // get_brief is listed only on a local root that opts in (D-386).
+      assert.equal(listed.includes('get_brief'), tools.includes('get_brief'), mode);
 
       assert.deepEqual(client.getServerVersion(), {
         name: 'vibecompass',
@@ -407,6 +425,7 @@ test('each mode serves its tool surface, the package version, and its instructio
       const instructions = client.getInstructions() ?? '';
       assert.equal(instructions, serverInstructions(resolved));
       assert.match(instructions, /source of truth/);
+      // Never, in any mode, on any root, opted in or not (D-385, D-386).
       assert.doesNotMatch(instructions, /brief/i);
       for (const tool of instructions.match(/\b[a-z]+(?:_[a-z]+)+\b/g) ?? []) {
         assert.ok(listed.includes(tool), `${mode} instructions name ${tool}`);
@@ -421,7 +440,7 @@ test('each mode serves its tool surface, the package version, and its instructio
   assert.match(serverInstructions('hybrid'), /writes never change the local files/);
   assert.match(serverInstructions('hosted'), /hosted VibeCompass project/);
   assert.equal(resolveServerMode({}), null);
-  assert.throws(() => createServer({}), /VIBECOMPASS_API_KEY/);
+  await assert.rejects(createServer({}), /VIBECOMPASS_API_KEY/);
 });
 
 test('local read provider serves project and file context from the local root', async () => {

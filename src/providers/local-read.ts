@@ -22,7 +22,8 @@ import {
 } from '../budget.js';
 import type { ReadProvider } from '../read-provider.js';
 
-const TIMEOUT_MS = 5_000;
+// D-007's per-call limit; get_brief shares it (D-386).
+export const TIMEOUT_MS = 5_000;
 const LOG_DIR = join(homedir(), '.vibecompass');
 const LOG_FILE = join(LOG_DIR, 'mcp-errors.log');
 const NON_CANONICAL_DECISION_FILES = new Set(['INDEX.md']);
@@ -359,19 +360,23 @@ export class LocalReadProvider implements ReadProvider {
   }
 
   private logError(cacheKey: string, error: unknown): void {
-    try {
-      if (!existsSync(LOG_DIR)) {
-        mkdirSync(LOG_DIR, { recursive: true });
-      }
+    logLocalError(cacheKey, error);
+  }
+}
 
-      const message = error instanceof Error ? error.message : String(error);
-      appendFileSync(
-        LOG_FILE,
-        `[${new Date().toISOString()}] local:${cacheKey} — ${message}\n`,
-      );
-    } catch {
-      // Logging must never crash the MCP process.
+export function logLocalError(cacheKey: string, error: unknown): void {
+  try {
+    if (!existsSync(LOG_DIR)) {
+      mkdirSync(LOG_DIR, { recursive: true });
     }
+
+    const message = error instanceof Error ? error.message : String(error);
+    appendFileSync(
+      LOG_FILE,
+      `[${new Date().toISOString()}] local:${cacheKey} — ${message}\n`,
+    );
+  } catch {
+    // Logging must never crash the MCP process.
   }
 }
 
@@ -669,7 +674,7 @@ function transformFeature(feature: any, componentSlug?: string) {
   };
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+export function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`Request timed out after ${timeoutMs}ms`));

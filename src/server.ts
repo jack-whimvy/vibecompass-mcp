@@ -2,7 +2,9 @@ import { readFileSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { VibeCompassClient } from './api-client.js';
 import { HostedReadProvider } from './providers/hosted-read.js';
+import { LocalBriefProvider } from './providers/local-brief.js';
 import { LocalReadProvider } from './providers/local-read.js';
+import { registerBriefTool } from './tools/brief.js';
 import { registerReadTools } from './tools/read.js';
 import { registerWriteTools } from './tools/write.js';
 
@@ -47,12 +49,14 @@ export function serverInstructions(mode: ServerMode): string {
 
 /**
  * Build the MCP server for the mode the config selects (D-177): read tools in
- * every mode, write tools only with an API key (D-178).
+ * every mode, write tools only with an API key (D-178), and get_brief only on
+ * a local root whose project.yaml sets `brief.enabled: true` (D-386). The
+ * instructions are the same either way and never name get_brief.
  */
-export function createServer(config: ServerConfig): {
+export async function createServer(config: ServerConfig): Promise<{
   server: McpServer;
   mode: ServerMode;
-} {
+}> {
   const mode = resolveServerMode(config);
   if (!mode) {
     throw new Error(
@@ -82,6 +86,13 @@ export function createServer(config: ServerConfig): {
     : new HostedReadProvider(client as VibeCompassClient);
 
   registerReadTools(server, readProvider);
+
+  if (config.rootDir) {
+    const briefProvider = new LocalBriefProvider(config.rootDir);
+    if (await briefProvider.isEnabled()) {
+      registerBriefTool(server, briefProvider);
+    }
+  }
 
   if (client) {
     registerWriteTools(server, client);
