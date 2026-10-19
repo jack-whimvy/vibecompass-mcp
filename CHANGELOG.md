@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.8 - unreleased
+## 0.1.8 - 2026-10-19
 
 - `get_brief`, opt-in (D-386). On a local root whose `project.yaml` sets
   `brief.enabled: true`, Local and Hybrid mode offer `get_brief`. It returns
