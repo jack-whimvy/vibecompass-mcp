@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.8 - unreleased
+
+- `get_brief`, opt-in (D-386). On a local root whose `project.yaml` sets
+  `brief.enabled: true`, Local and Hybrid mode offer `get_brief`. It returns
+  the session brief for a task: the markdown exactly as `vibecompass brief`
+  prints it, then its metadata as compact JSON with units as references.
+  Inputs are `task`, and optionally `files`, `feature_slugs`, `claims`,
+  `lane_id`, and `budget` (800 to 6,000, default 6,000). The tool never picks
+  a session lane itself.
+- The tool isn't listed in Hosted mode, or when the setting is absent, false,
+  or anything but the boolean `true`. The server checks the setting when it
+  starts. If the setting is turned off while it runs, each call returns a
+  note and builds nothing.
+- The markdown keeps the brief's own budget instead of the 2,500-token cap;
+  the JSON metadata passes the cap. A call that fails or takes more than 5
+  seconds returns an error with no brief. A brief is never served from a
+  cache, so it can't carry text the root now excludes.
+- The server instructions are unchanged and never mention `get_brief`. Its
+  description calls the brief a starting point, not the whole context.
+- The lockfile resolves `@modelcontextprotocol/sdk` 1.32.1 (was 1.28.0),
+  within the same `^1.28` range; `npm audit` reports no findings (was 9).
+- Depend on `@vibecompass/vibecompass` `^0.17.5`, which exports the brief
+  settings reader `get_brief` uses.
+
 ## 0.1.7 - 2026-10-18
 
 - Local token budgets match hosted (D-053, D-385). `get_project_context` and
