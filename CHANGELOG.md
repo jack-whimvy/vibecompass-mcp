@@ -1,5 +1,21 @@
 # Changelog
 
+Entries before 0.1.9 cite decisions by number. Those decisions are in the
+VibeCompass project's own decision log, which is private, not in your
+project's log. From 0.1.9 on, entries state each rule without a number, as the
+server's instructions and tool descriptions always have.
+
+## 0.1.9 - 2026-10-31
+
+- Depend on `@vibecompass/vibecompass` `>=0.17.5 <0.19.0`, so a new install
+  gets core 0.18.0. The range keeps 0.17.5 as its lowest version, the first
+  that exports the brief settings reader `get_brief` uses, and the tests pass
+  on both. The lockfile pins core 0.18.0.
+- With core 0.18.0, the messages `get_brief` relays from the brief engine,
+  such as an `incomplete` brief's reason, name no decision by number. The
+  tools, their inputs and responses, the server instructions, and the token
+  budgets are unchanged.
+
 ## 0.1.8 - 2026-10-19
 
 - `get_brief`, opt-in (D-386). On a local root whose `project.yaml` sets
