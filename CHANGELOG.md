@@ -11,6 +11,12 @@ server's instructions and tool descriptions always have.
   gets core 0.18.0. The range keeps 0.17.5 as its lowest version, the first
   that exports the brief settings reader `get_brief` uses, and the tests pass
   on both. The lockfile pins core 0.18.0.
+- The lockfile resolves `@modelcontextprotocol/sdk` 1.32.2 (was 1.32.1) and
+  nine of its dependencies at newer patch or minor versions, within the same
+  ranges. That clears two `npm audit` findings, in body-parser and fast-uri.
+  One high finding remains, in zod 3 (GHSA-mrhx-c7xc-m3w5): no 3.x release
+  fixes it, and the fix is zod 4, which a later release adopts. The lockfile
+  isn't published, so an install resolves these versions from the same ranges.
 - With core 0.18.0, the messages `get_brief` relays from the brief engine,
   such as an `incomplete` brief's reason, name no decision by number. The
   tools, their inputs and responses, the server instructions, and the token
