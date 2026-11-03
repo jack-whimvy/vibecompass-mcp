@@ -25,7 +25,12 @@ server's instructions and tool descriptions always have.
     are rejected, with the same error code, and the message names the same
     input.
 - The core range stays `>=0.17.5 <0.19.0`, so a new install gets core 0.18.1,
-  and the lockfile pins it.
+  and the lockfile pins it. The tests pass on core 0.18.1 and on 0.17.5, the
+  range's lowest version. The lockfile also resolves four of the SDK's
+  dependencies at newer patch releases within the same ranges: hono 4.13.16,
+  @hono/node-server 2.1.6, express-rate-limit 8.7.3, and jose 6.2.15. The
+  lockfile isn't published, so an install resolves these versions from the
+  same ranges. `npm audit` reports no findings.
 
 ## 0.1.9 - 2026-10-31
 
