@@ -443,6 +443,112 @@ test('each mode serves its tool surface, the package version, and its instructio
   await assert.rejects(createServer({}), /VIBECOMPASS_API_KEY/);
 });
 
+test('every tool lists its inputs and their limits, and the server rejects a call past one', async (t) => {
+  const optedInRoot = await mkdtemp(path.join(os.tmpdir(), 'vibecompass-mcp-schemas-'));
+  t.after(() => rm(optedInRoot, { recursive: true, force: true }));
+  await writeFile(
+    path.join(optedInRoot, 'project.yaml'),
+    ['format_version: 1', 'name: Schemas', 'brief:', '  enabled: true', ''].join('\n'),
+    'utf8',
+  );
+  // Hybrid on a root that opts in lists all eleven tools. The API URL refuses
+  // connections, so a call that wrongly passed validation could not reach a server.
+  const { client, server } = await connectClient({
+    rootDir: optedInRoot,
+    apiKey: 'test-key',
+    apiUrl: 'http://127.0.0.1:9',
+  });
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  // Drops the description annotations (tested elsewhere), not an input that is
+  // named description, whose value is a schema object.
+  const withoutDescriptions = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(withoutDescriptions);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value)
+          .filter(([key, entry]) => !(key === 'description' && typeof entry === 'string'))
+          .map(([key, entry]) => [key, withoutDescriptions(entry)]),
+      );
+    }
+    return value;
+  };
+  const draft7 = 'http://json-schema.org/draft-07/schema#';
+  const objectOf = (properties: Record<string, unknown>, required?: string[]) => ({
+    $schema: draft7,
+    type: 'object',
+    properties,
+    ...(required ? { required } : {}),
+  });
+  const text = (limits: Record<string, number> = {}) => ({ type: 'string', ...limits });
+  const noInputs = { type: 'object', properties: {} };
+  const expected: Record<string, unknown> = {
+    get_project_context: noInputs,
+    get_conflicts: noInputs,
+    get_feature_context: objectOf({ feature_slug: text(), component_slug: text() }, ['feature_slug']),
+    get_decision_log: objectOf({ limit: { type: 'number', default: 20 }, feature_slug: text() }),
+    get_file_context: objectOf({ filepath: text() }, ['filepath']),
+    list_pending_proposals: objectOf({
+      status: { type: 'string', enum: ['open', 'stale', 'dismissed', 'applied'], default: 'open' },
+    }),
+    get_brief: objectOf(
+      {
+        task: text({ minLength: 1, maxLength: 1_000 }),
+        files: { type: 'array', items: text({ minLength: 1, maxLength: 300 }), maxItems: 20 },
+        feature_slugs: { type: 'array', items: text({ minLength: 1, maxLength: 300 }), maxItems: 10 },
+        claims: { type: 'array', items: text({ minLength: 1, maxLength: 300 }), maxItems: 20 },
+        budget: { type: 'integer', minimum: 800, maximum: 6_000 },
+        lane_id: { type: 'string', pattern: '^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$' },
+      },
+      ['task'],
+    ),
+    log_decision: objectOf(
+      {
+        feature_slug: text({ minLength: 1 }),
+        title: text({ minLength: 1, maxLength: 200 }),
+        description: text({ minLength: 1, maxLength: 5_000 }),
+      },
+      ['feature_slug', 'title', 'description'],
+    ),
+    update_feature_status: objectOf(
+      {
+        feature_slug: text({ minLength: 1 }),
+        status: { type: 'string', enum: ['draft', 'in_progress', 'complete', 'blocked', 'deprecated'] },
+        notes: text({ maxLength: 2_000 }),
+      },
+      ['feature_slug', 'status'],
+    ),
+    flag_conflict: objectOf(
+      { feature_slug: text({ minLength: 1 }), description: text({ minLength: 1, maxLength: 5_000 }) },
+      ['feature_slug', 'description'],
+    ),
+    add_session_summary: objectOf(
+      {
+        summary: text({ minLength: 1, maxLength: 10_000 }),
+        features_touched: { type: 'array', items: text({ minLength: 1 }), minItems: 1 },
+      },
+      ['summary', 'features_touched'],
+    ),
+  };
+
+  const { tools } = await client.listTools();
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), Object.keys(expected).sort());
+  for (const tool of tools) {
+    assert.deepEqual(withoutDescriptions(tool.inputSchema), expected[tool.name], tool.name);
+  }
+
+  // A write tool's limit holds before any request is sent.
+  const tooLong = await client.callTool({
+    name: 'log_decision',
+    arguments: { feature_slug: 'web--authentication', title: 'a'.repeat(201), description: 'd' },
+  });
+  assert.equal(tooLong.isError, true);
+  assert.match(getFirstText(tooLong as { content?: Array<{ type: string; text?: string }> }), /Input validation error[\s\S]*title/);
+});
+
 test('local read provider serves project and file context from the local root', async () => {
   const rootDir = await mkdtemp(path.join(os.tmpdir(), 'vibecompass-mcp-local-'));
 

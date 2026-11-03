@@ -444,6 +444,52 @@ test('budget is a whole number from 800 to 6,000 (D-386)', async (t) => {
   assert.equal(JSON.parse(texts(defaulted)[1]).budget.limit, 6000);
 });
 
+test('get_brief rejects a call past any input bound and accepts one at each bound (D-386)', async (t) => {
+  const fixture = await makeRoot(t);
+  const { client } = await connect(t, { rootDir: fixture.rootDir });
+  const pathOf = (length: number, index = 0) => `mcp:${String(index).padStart(2, '0')}${'a'.repeat(length - 6)}`;
+  const listOf = (count: number) => Array.from({ length: count }, (_, index) => pathOf(20, index));
+
+  const pastBounds: Array<[string, string, Record<string, unknown>]> = [
+    ['an empty task', 'task', { task: '' }],
+    ['a task of spaces, which trims to empty', 'task', { task: '   ' }],
+    ['a task of 1,001 characters', 'task', { task: 'a'.repeat(1_001) }],
+    ['a path of 301 characters', 'files', { task: MATCHING_TASK, files: [pathOf(301)] }],
+    ['an empty claim', 'claims', { task: MATCHING_TASK, claims: [''] }],
+    ['21 files', 'files', { task: MATCHING_TASK, files: listOf(21) }],
+    ['21 claims', 'claims', { task: MATCHING_TASK, claims: listOf(21) }],
+    ['11 feature slugs', 'feature_slugs', { task: MATCHING_TASK, feature_slugs: listOf(11) }],
+    ['a lane id outside the pattern', 'lane_id', { task: MATCHING_TASK, lane_id: 'Not_A_Lane' }],
+    ['no task', 'task', {}],
+  ];
+  for (const [label, field, args] of pastBounds) {
+    let message = '';
+    try {
+      const result = await callBrief(client, args);
+      assert.equal(result.isError, true, `${label} is rejected`);
+      message = texts(result).join('\n');
+    } catch (error) {
+      message = String(error);
+    }
+    assert.match(message, /Input validation error/, label);
+    assert.ok(message.includes(field), `${label}: the error names ${field}`);
+  }
+
+  // At each bound the call builds a brief. Unknown keys are dropped, not refused.
+  const atBounds = await callBrief(client, {
+    task: `${MATCHING_TASK} ${'x'.repeat(1_000 - MATCHING_TASK.length - 1)}`,
+    files: Array.from({ length: 20 }, (_, index) => pathOf(300, index)),
+    feature_slugs: listOf(10),
+    lane_id: 'a-lane',
+    budget: 800,
+    unknown_key: true,
+  });
+  assert.equal(atBounds.isError, undefined);
+  const [markdown, metadata] = texts(atBounds);
+  assert.match(markdown, /^# Session brief/);
+  assert.ok(JSON.parse(metadata), 'the metadata block is JSON');
+});
+
 test('the metadata block passes the hard cap; the markdown block keeps the brief budget (D-385, D-386; review S1)', async (t) => {
   const fixture = await makeRoot(t);
   const { client } = await connect(t, { rootDir: fixture.rootDir });

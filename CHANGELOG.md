@@ -5,6 +5,28 @@ VibeCompass project's own decision log, which is private, not in your
 project's log. From 0.1.9 on, entries state each rule without a number, as the
 server's instructions and tool descriptions always have.
 
+## 0.1.10 - 2026-11-02
+
+- Depend on `zod` `^4.6.6` (was `^3.23.0`). That fixes the high `npm audit`
+  finding 0.1.9 disclosed, GHSA-mrhx-c7xc-m3w5: zod could exhaust memory while
+  validating oversized constrained collections. No zod 3 release fixes it. An
+  install now gets one copy of zod, 4.6.7 today, which
+  `@modelcontextprotocol/sdk` uses too. The SDK range stays `^1.28.0`: every
+  SDK release in it accepts zod 4, and the tests pass on SDK 1.28.0 and 1.32.2.
+- The tools, their inputs and limits, their responses, and the server
+  instructions are unchanged. Two things a client can see are different:
+  - The input schemas in the tool list no longer say
+    `"additionalProperties": false`. The server has never refused an argument
+    it doesn't know: it drops it, in this release as in 0.1.9. The schemas now
+    say what the server does.
+  - When an argument is rejected, the error text is zod 4's. For example,
+    `Too big: expected array to have <=20 items at files`, where 0.1.9 said
+    `Array must contain at most 20 element(s) at files`. The same arguments
+    are rejected, with the same error code, and the message names the same
+    input.
+- The core range stays `>=0.17.5 <0.19.0`, so a new install gets core 0.18.1,
+  and the lockfile pins it.
+
 ## 0.1.9 - 2026-10-31
 
 - Depend on `@vibecompass/vibecompass` `>=0.17.5 <0.19.0`, so a new install
