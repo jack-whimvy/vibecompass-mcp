@@ -5,6 +5,17 @@ VibeCompass project's own decision log, which is private, not in your
 project's log. From 0.1.9 on, entries state each rule without a number, as the
 server's instructions and tool descriptions always have.
 
+## 0.1.11 - 2026-11-23
+
+- Depend on `@vibecompass/vibecompass` `>=0.17.5 <0.20.0`, so a new install
+  gets core 0.19.0; 0.1.10's range ended below it. The range keeps 0.17.5 as
+  its lowest version, and the tests pass on core 0.19.0 and on 0.17.5. The
+  lockfile pins core 0.19.0.
+- The tools, their inputs and limits, their responses, and the server
+  instructions are unchanged. Core 0.19.0's new commands (the review relay,
+  the ready-for-review mark, the review settings) and its push in parts are
+  command-line features; the server reads project memory as before.
+
 ## 0.1.10 - 2026-11-02
 
 - Depend on `zod` `^4.6.6` (was `^3.23.0`). That fixes the high `npm audit`
