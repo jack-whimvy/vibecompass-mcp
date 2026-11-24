@@ -5,12 +5,17 @@ VibeCompass project's own decision log, which is private, not in your
 project's log. From 0.1.9 on, entries state each rule without a number, as the
 server's instructions and tool descriptions always have.
 
-## 0.1.11 - 2026-11-23
+## 0.1.11 - 2026-11-24
 
 - Depend on `@vibecompass/vibecompass` `>=0.17.5 <0.20.0`, so a new install
   gets core 0.19.0; 0.1.10's range ended below it. The range keeps 0.17.5 as
   its lowest version, and the tests pass on core 0.19.0 and on 0.17.5. The
-  lockfile pins core 0.19.0.
+  lockfile pins core 0.19.0. It also resolves nine of the SDK's dependencies
+  at newer releases within the same ranges: @hono/node-server 2.1.11,
+  encodeurl 2.0.3, express-rate-limit 8.7.5, hono 4.13.21, ip-address 10.7.6,
+  jose 6.2.18, object-inspect 1.14.0, pkce-challenge 5.0.2, and router 2.3.0.
+  The lockfile isn't published, so an install resolves these versions from
+  the same ranges. `npm audit` reports no findings.
 - The tools, their inputs and limits, their responses, and the server
   instructions are unchanged. Core 0.19.0's new commands (the review relay,
   the ready-for-review mark, the review settings) and its push in parts are
